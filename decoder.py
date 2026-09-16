@@ -2,6 +2,7 @@ from __future__ import annotations
 from collections import defaultdict
 from web3 import Web3
 from rpc import TRANSFER_TOPIC, USDC_ERC20, NATIVE_MIRROR
+from wallet_policy import is_dex_infrastructure
 
 SWAP_TOPICS = {
     Web3.keccak(text=s).hex().removeprefix("0x").lower()
@@ -77,6 +78,7 @@ def wallet_token_deltas(receipt, wallet: str) -> dict[str, int]:
     return dict(deltas)
 
 def classify_trade(rpc, receipt, wallet: str, min_usdc_flow: float, native_value_wei: int = 0, strict=False):
+    if is_dex_infrastructure(wallet): return []
     if int(receipt.get("status", 1)) != 1:
         return []
     deltas = wallet_token_deltas(receipt, wallet)

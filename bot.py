@@ -21,6 +21,7 @@ from intelligence_book import IntelligenceBook
 from watchlist_manager import WatchlistManager
 from alert_outbox import AlertOutbox
 from process_lock import ProcessLock
+from wallet_policy import is_dex_infrastructure
 
 logging.basicConfig(level=getattr(logging, SETTINGS.log_level, logging.INFO), format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("arc-bot")
@@ -65,7 +66,9 @@ class ArcSmartMoneyBot:
                 self.watch = dict(self.watch_manager.items)
                 # Candidates are observed prospectively with zero authority. They
                 # cannot need promotion in order to collect promotion evidence.
-                for row in self.db.db.execute("SELECT wallet FROM discovery_candidates WHERE status='QUARANTINE' ORDER BY first_discovered_at LIMIT ?",(self.cfg.promotion_max_wallets,)):
+                candidates=[r for r in self.db.db.execute("SELECT wallet FROM discovery_candidates WHERE status='QUARANTINE' ORDER BY first_discovered_at")
+                            if not is_dex_infrastructure(r['wallet'],self.cfg)]
+                for row in candidates[:self.cfg.promotion_max_wallets]:
                     addr=Web3.to_checksum_address(row["wallet"])
                     self.watch.setdefault(addr.lower(),WalletInfo(addr,"quarantine",0,"quarantine"))
                 self.identities = self.identity_refresher.poll(list(self.watch),self.cfg.watchlist_reload_seconds)
@@ -90,6 +93,8 @@ class ArcSmartMoneyBot:
                 log.exception("loop error: %s", e); time.sleep(2)
 
     def process_block(self, n: int):
+        self.watch = {wallet:info for wallet,info in self.watch.items()
+                      if not is_dex_infrastructure(wallet,self.cfg)}
         # Persist work to retry, not completion. This also protects the first
         # START_BLOCK=latest block when the process dies before any checkpoint.
         self.db.begin_block(n)
@@ -98,6 +103,7 @@ class ArcSmartMoneyBot:
         if not getattr(self, "_clusters_restored", False):
             if hasattr(self, "clusters"):
                 for prior in self.db.recent_runtime_events(ts-max(self.cfg.cluster_window_seconds,self.cfg.exit_cluster_window_seconds)):
+                    if is_dex_infrastructure(prior.wallet,self.cfg): continue
                     self.clusters.add(prior)
             self._clusters_restored = True
         participants = (self.rpc.watched_participants(n, list(self.watch), block['hash'])
@@ -149,6 +155,7 @@ class ArcSmartMoneyBot:
             self.db.checkpoint(n+1)
 
     def handle_event(self, event: TradeEvent):
+        if is_dex_infrastructure(event.wallet,self.cfg): return
         # Re-evaluate buffered confirmations after removals, demotions or changes
         # to identity membership. Old events must not retain stale authority.
         for queues in self.clusters.events.values():

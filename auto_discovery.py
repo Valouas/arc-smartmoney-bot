@@ -13,6 +13,7 @@ from wallet_metrics import profile_from_rows
 from identity_graph import IdentityGraph
 from atomic_json import write_json
 from forward_metrics import build_forward_profile
+from wallet_policy import is_dex_infrastructure, require_smart_money_wallet
 
 logging.basicConfig(level=getattr(logging, SETTINGS.log_level, logging.INFO), format="%(asctime)s %(levelname)s %(message)s")
 log=logging.getLogger("auto-discovery")
@@ -62,6 +63,7 @@ class AutoDiscovery:
         rows=self._all_transfer_rows(token); buyers=[]; seen=set()
         for row in rows:
             wallet=row["to"].lower()
+            if is_dex_infrastructure(wallet,self.cfg): continue
             if wallet in seen or wallet=="0x0000000000000000000000000000000000000000": continue
             try:
                 tx=self.rpc.w3.eth.get_transaction(row["tx_hash"])
@@ -85,7 +87,8 @@ class AutoDiscovery:
                 log.warning("winner history incomplete: %s", token)
                 continue
             for wallet,rank,txh in buyers:
-                self.db.upsert_discovery_candidate(wallet,token,rank); total+=1
+                if not is_dex_infrastructure(wallet,self.cfg):
+                    if self.db.upsert_discovery_candidate(wallet,token,rank): total+=1
             self.db.db.execute("UPDATE discovery_winners SET processed_at=? WHERE token=?", (int(time.time()),token)); self.db.db.commit()
             log.info("winner %s -> %s verified early buyers",token,len(buyers))
         return total
@@ -107,6 +110,7 @@ class AutoDiscovery:
         return hashes
 
     def hydrate_wallet(self,wallet):
+        if is_dex_infrastructure(wallet,self.cfg): return 0
         self.db.db.execute("UPDATE discovery_candidates SET history_complete=0,hydrated_at=NULL WHERE wallet=?", (wallet.lower(),))
         self.db.db.commit()
         hashes=self.activity_hashes(wallet); inserted=0
@@ -129,7 +133,8 @@ class AutoDiscovery:
         return inserted
 
     def hydrate_candidates(self):
-        rows=self.db.db.execute("SELECT * FROM discovery_candidates WHERE status='QUARANTINE' AND (hydrated_at IS NULL OR history_complete=0) ORDER BY source_winners DESC,best_early_rank ASC LIMIT ?", (self.cfg.discovery_max_wallets_per_cycle,)).fetchall()
+        rows=self.db.db.execute("SELECT * FROM discovery_candidates WHERE status='QUARANTINE' AND (hydrated_at IS NULL OR history_complete=0) ORDER BY source_winners DESC,best_early_rank ASC").fetchall()
+        rows=[r for r in rows if not is_dex_infrastructure(r['wallet'],self.cfg)][:self.cfg.discovery_max_wallets_per_cycle]
         n=0
         for r in rows:
             try: count=self.hydrate_wallet(r["wallet"])
@@ -179,6 +184,7 @@ class AutoDiscovery:
         return out
 
     def profile_candidate(self,row):
+        require_smart_money_wallet(row['wallet'],self.cfg)
         p=build_forward_profile(self.db,row["wallet"],self.cfg)
         p["source_winners"]=int(row["source_winners"])
         p["best_early_rank"]=row["best_early_rank"]
@@ -198,15 +204,18 @@ class AutoDiscovery:
         return len({graph.identity_id(w) for w in deployers if graph.eligible(w)})
 
     def _funding_collision(self,wallet):
-        promoted=[r["wallet"] for r in self.db.db.execute("SELECT wallet FROM promoted_wallets WHERE enabled=1").fetchall()]
+        promoted=[r["wallet"] for r in self.db.db.execute("SELECT wallet FROM promoted_wallets WHERE enabled=1").fetchall()
+                  if not is_dex_infrastructure(r['wallet'],self.cfg)]
         self.identities=IdentityGraph(self.arc); self.identities.refresh(promoted+[wallet])
         return not self.identities.eligible(wallet) or any(self.identities.related(wallet,p) for p in promoted)
 
     def promote_candidates(self):
         cutoff=int(time.time())-self.cfg.discovery_quarantine_hours*3600
         rows=self.db.db.execute("SELECT * FROM discovery_candidates WHERE status='QUARANTINE' AND hydrated_at IS NOT NULL AND history_complete=1 AND first_discovered_at<=? ORDER BY source_winners DESC,best_early_rank ASC", (cutoff,)).fetchall()
-        current=self.db.db.execute("SELECT COUNT(*) n FROM promoted_wallets WHERE enabled=1").fetchone()["n"]; promoted=0
+        current=sum(not is_dex_infrastructure(r['wallet'],self.cfg)
+                    for r in self.db.db.execute("SELECT wallet FROM promoted_wallets WHERE enabled=1")); promoted=0
         for row in rows:
+            if is_dex_infrastructure(row['wallet'],self.cfg): continue
             if current+promoted>=self.cfg.promotion_max_wallets: break
             p=self.profile_candidate(row); self.db.save_wallet_profile(p)
             self.db.db.execute("UPDATE discovery_candidates SET profile_score=?,profile_class=? WHERE wallet=?", (p["smart_score"],p["profile_class"],row["wallet"])); self.db.db.commit()
@@ -225,12 +234,14 @@ class AutoDiscovery:
             if reasons:
                 self.db.db.execute("UPDATE discovery_candidates SET promotion_reason=? WHERE wallet=?", (",".join(reasons),row["wallet"])); self.db.db.commit(); continue
             weight=max(1,min(4,int(p["recommended_weight"]))); label=f"auto {p['profile_class']} {p['smart_score']}"
-            self.db.save_promoted_wallet(row["wallet"],p["smart_score"],p["profile_class"],weight,label); promoted+=1
+            if not self.db.save_promoted_wallet(row["wallet"],p["smart_score"],p["profile_class"],weight,label): continue
+            promoted+=1
             log.info("PROMOTED %s score=%s class=%s",row["wallet"],p["smart_score"],p["profile_class"])
         self.write_generated_watchlist(); return promoted
 
     def write_generated_watchlist(self):
         rows=self.db.db.execute("SELECT * FROM promoted_wallets WHERE enabled=1 ORDER BY smart_score DESC,promoted_at ASC").fetchall()
+        rows=[r for r in rows if not is_dex_infrastructure(r['wallet'],self.cfg)]
         payload={"wallets":[{"address":r["wallet"],"label":r["label"],"weight":int(r["weight"]),"group":"auto_discovered","smart_score":int(r["smart_score"]),"profile_class":r["profile_class"]} for r in rows]}
         write_json("generated_watchlist.json", payload)
 

@@ -198,3 +198,7 @@ set `ARC_RUN_NETWORK=1` and run `python -m pytest -m network -v`.
 RPC throttling, bounded retries, verified fallbacks and exact PowerShell commands
 are described in [the RPC operations guide](docs/RPC_RESILIENCE.md).
 Use `python rpc_check.py` for a small read-only check of your configured RPC.
+
+Reviewed DEX emitters remain swap evidence but cannot become smart-money wallets.
+For existing candidates/profiles, follow the [targeted infrastructure cleanup](docs/DEX_INFRASTRUCTURE.md)
+after stopping all four processes; it preserves historical trades and other wallets.

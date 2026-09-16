@@ -10,6 +10,7 @@ from wallet_metrics import profile_from_rows
 from atomic_json import write_json
 from forward_metrics import build_forward_profile, collect_outcomes
 from market_data import DexScreenerClient
+from wallet_policy import is_dex_infrastructure
 
 logging.basicConfig(
     level=getattr(logging, SETTINGS.log_level, logging.INFO),
@@ -29,7 +30,7 @@ class WalletProfiler:
     def wallets(self):
         return [r[0] for r in self.db.db.execute(
             "SELECT DISTINCT lower(wallet) FROM events"
-        ).fetchall() if r[0]]
+        ).fetchall() if r[0] and not is_dex_infrastructure(r[0],self.cfg)]
 
     def _active_hours(self, wallet):
         rows = self.db.db.execute(

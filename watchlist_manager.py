@@ -3,6 +3,7 @@ import json,time
 from pathlib import Path
 from web3 import Web3
 from models import WalletInfo
+from wallet_policy import is_dex_infrastructure
 
 class WatchlistManager:
     def __init__(self, base="watchlist.json", generated="generated_watchlist.json", reload_seconds=30):
@@ -27,6 +28,7 @@ class WatchlistManager:
             for x in self._read(path):
                 try:addr=Web3.to_checksum_address(x["address"])
                 except Exception:continue
+                if is_dex_infrastructure(addr): continue
                 merged[addr.lower()]=WalletInfo(
                     address=addr,
                     label=x.get("label",source),

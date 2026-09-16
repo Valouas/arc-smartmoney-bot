@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json, time
 from pathlib import Path
+from wallet_policy import is_dex_infrastructure
 
 class IntelligenceBook:
     def __init__(self, path="data/wallet_intelligence.json", reload_seconds=30):
@@ -23,6 +24,7 @@ class IntelligenceBook:
             pass
 
     def get(self, wallet):
+        if is_dex_infrastructure(wallet): return None
         self.reload_if_due()
         return self.profiles.get(wallet.lower())
 

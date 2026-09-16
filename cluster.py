@@ -2,6 +2,7 @@ from __future__ import annotations
 import time
 from collections import defaultdict, deque
 from models import TradeEvent, ClusterSignal
+from wallet_policy import is_dex_infrastructure, require_smart_money_wallet
 
 class ClusterBook:
     def __init__(self, buy_window: int, sell_window: int):
@@ -12,10 +13,12 @@ class ClusterBook:
     def prune(self, now):
         for token in list(self.events):
             for side,window in (("BUY",self.buy_window),("SELL",self.sell_window)):
-                self.events[token][side]=deque(e for e in self.events[token][side] if e.timestamp>=now-window)
+                self.events[token][side]=deque(e for e in self.events[token][side]
+                    if e.timestamp>=now-window and not is_dex_infrastructure(e.wallet))
             if not any(self.events[token].values()): del self.events[token]
 
     def add(self, event: TradeEvent) -> ClusterSignal:
+        require_smart_money_wallet(event.wallet)
         self.prune(event.timestamp or int(time.time()))
         now = event.timestamp or int(time.time())
         q = self.events[event.token][event.side]

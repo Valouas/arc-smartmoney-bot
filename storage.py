@@ -3,6 +3,7 @@ import sqlite3, json, time
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
+from wallet_policy import is_dex_infrastructure
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS seen_txs (
@@ -227,6 +228,7 @@ class Storage:
         return payload, True
 
     def wallet_eligible(self, wallet):
+        if is_dex_infrastructure(wallet): return False
         row = self.db.execute("SELECT status,history_complete FROM discovery_candidates WHERE wallet=?", (wallet.lower(),)).fetchone()
         if row is None: return True  # Manually curated seed.
         if row["status"] != "PROMOTED" or not row["history_complete"]: return False
@@ -425,6 +427,7 @@ class Storage:
         self.commit()
 
     def save_wallet_profile(self, profile):
+        if is_dex_infrastructure(profile['wallet']): return False
         self.db.execute(
             """INSERT OR REPLACE INTO wallet_profiles(
                 wallet,generated_at,smart_score,profile_class,recommended_weight,
@@ -452,6 +455,7 @@ class Storage:
         self.commit()
 
     def upsert_discovery_candidate(self, wallet, token, rank):
+        if is_dex_infrastructure(wallet): return False
         now=int(time.time())
         w=wallet.lower(); t=token.lower()
         self.db.execute(
@@ -467,8 +471,10 @@ class Storage:
                    WHERE wallet=?""", (now,rank,rank,rank,w)
             )
         self.commit()
+        return True
 
     def save_promoted_wallet(self, wallet, score, profile_class, weight, label):
+        if is_dex_infrastructure(wallet): return False
         now=int(time.time())
         self.db.execute(
             """INSERT OR REPLACE INTO promoted_wallets(wallet,promoted_at,smart_score,profile_class,weight,label,enabled)
@@ -479,6 +485,7 @@ class Storage:
             (score,profile_class,wallet.lower())
         )
         self.commit()
+        return True
 
 V4_SCHEMA = """
 CREATE TABLE IF NOT EXISTS discovery_winners (

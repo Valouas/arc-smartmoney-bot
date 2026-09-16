@@ -5,6 +5,7 @@ Historical winner-selected research rows never enter this scoring cohort.
 import time
 import math
 from wallet_metrics import profile_from_rows
+from wallet_policy import require_smart_money_wallet
 
 
 def intervals(rows):
@@ -19,6 +20,7 @@ def intervals(rows):
 
 
 def build_forward_profile(storage, wallet, cfg, now=None):
+    require_smart_money_wallet(wallet,cfg)
     now = int(time.time()) if now is None else now
     db = storage.db; wallet = wallet.lower()
     epoch = db.execute("SELECT started_at FROM observation_epochs WHERE name='launch_universe'").fetchone()
