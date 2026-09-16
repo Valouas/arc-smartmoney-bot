@@ -217,10 +217,14 @@ class ResilientRPCProvider(JSONBaseProvider):
     transient failure exhausted on the active endpoint, or an explicit Alchemy
     monthly quota refusal, permits switching.
     """
-    def __init__(self, url, chain_id, limiter, fallback_urls=(), *, session=None, sleep=time.sleep):
+    def __init__(self, url, chain_id, limiter, fallback_urls=(), *, session=None, sleep=time.sleep,
+                 fallback_limiter=None):
         super().__init__()
         self.urls = tuple(dict.fromkeys([url, *fallback_urls]))
         self.chain_id, self.limiter = chain_id, limiter
+        # All fallback endpoints share one conservative, process-shared budget.
+        # Direct callers retain the original single-budget behavior by default.
+        self.fallback_limiter = fallback_limiter if fallback_limiter is not None else limiter
         self.session = session if session is not None else requests.Session()
         self.sleep = sleep
         self.active = 0
@@ -236,11 +240,12 @@ class ResilientRPCProvider(JSONBaseProvider):
         return error
 
     def _request(self, index, method, params):
+        limiter = self.limiter if index == 0 else self.fallback_limiter
         payload = self.encode_rpc_request(method, params)
         request_id = json.loads(payload)['id']
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                self.limiter.acquire()
+                limiter.acquire()
             except (OSError, sqlite3.Error):
                 raise self._error(method, 'rate_limiter', attempt, index) from None
             retry_after = None
@@ -256,7 +261,7 @@ class ResilientRPCProvider(JSONBaseProvider):
                                         attempt, index, status in RETRY_STATUSES)
                     if (error.retryable or quota) and retry_after is not None:
                         try:
-                            self.limiter.defer(retry_delay(attempt, retry_after))
+                            limiter.defer(retry_delay(attempt, retry_after))
                         except (OSError, sqlite3.Error):
                             raise self._error(method, 'rate_limiter', attempt, index) from None
                 else:

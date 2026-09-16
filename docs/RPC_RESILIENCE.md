@@ -11,6 +11,7 @@ paper mode restent inchangés.
 ARC_RPC_URL=https://rpc.mainnet.arc.io
 ARC_RPC_FALLBACK_URLS=https://rpc.arc-scan.org
 ARC_RPC_REQUESTS_PER_SECOND=2
+ARC_RPC_FALLBACK_REQUESTS_PER_SECOND=2
 ARC_RPC_RATE_LIMIT_FILE=data/rpc_rate_limit.sqlite3
 ARC_CHAIN_ID=5042
 ```
@@ -19,9 +20,13 @@ Le fallback est **optionnel**, désactivé par défaut (valeur vide). Plusieurs 
 peuvent être séparées par des virgules. Ne recopiez pas `.env.example` sur votre
 configuration existante. Le défaut de l'URL primaire existante reste inchangé.
 
-Le budget par défaut est de **2 requêtes par seconde au total**, sans rafale,
+Le budget par défaut est de **2 requêtes par seconde pour le primary**, sans rafale,
 partagé entre processus et instances grâce à un fichier SQLite distinct de la
-base métier. Chaque requête, tentative et contrôle de chaîne consomme une place.
+base métier. Tous les fallbacks partagent un second budget, également de
+**2 requêtes par seconde** par défaut, dans le fichier portant le même nom suivi
+de `.fallback`. Chaque requête, tentative et contrôle de chaîne consomme une place
+dans le budget de son provider. Le cooldown `Retry-After` est partagé entre les
+processus sur ce budget ; le processus qui bascule respecte aussi ce délai.
 Tous les processus doivent employer le même chemin absolu (un chemin relatif est
 résolu depuis le répertoire de lancement) et le même débit. `run_v4.py` les lance
 dans le même répertoire. Le fichier doit être sur un disque local ; des machines
@@ -62,8 +67,24 @@ Dans votre `.env` local uniquement, utilisez l'endpoint HTTPS Arc Mainnet Alchem
 comme `ARC_RPC_URL` et gardez l'ancien RPC dans
 `ARC_RPC_FALLBACK_URLS=https://rpc.mainnet.arc.io`. Ne commitez jamais la clé.
 Le changement prend effet au prochain redémarrage de `run_v4.py` ; il ne modifie
-ni les curseurs, ni les checkpoints. Le débit global reste à 2 requêtes/s pour
-protéger également le secours public, sans promettre un rattrapage du live.
+ni les curseurs, ni les checkpoints. Pour un compte Alchemy affichant 300 CU/s :
+
+```dotenv
+ARC_RPC_REQUESTS_PER_SECOND=5
+ARC_RPC_FALLBACK_REQUESTS_PER_SECOND=2
+```
+
+Le coût le plus élevé des méthodes actuellement utilisées est `eth_getLogs`,
+60 CU d'après le [barème Alchemy](https://www.alchemy.com/docs/reference/compute-unit-costs).
+5 appels/s correspondent donc au plafond de 300 CU/s même si tous demandent
+des logs. C'est une limite fixe adaptée au cas le plus coûteux, pas un ordonnanceur
+pondéré en CU : des méthodes moins chères pourraient autoriser davantage d'appels.
+Le quota Alchemy est partagé avec les autres usages du même compte. Ce réglage
+ne garantit ni l'absence de 429, ni le rattrapage du live ; le quota mensuel est
+aussi consommé plus vite (30 millions de CU font environ 27,8 h à 300 CU/s constants).
+Le secours public reste limité à 2 appels/s même si d'autres processus utilisent
+encore Alchemy. Arrêtez puis relancez les quatre processus ensemble pour charger
+les mêmes limites et éviter de mélanger des versions du limiteur.
 
 Les HTTP 429 déclenchent les trois tentatives habituelles puis le fallback.
 Alchemy documente aussi le quota mensuel épuisé comme HTTP 403, code JSON-RPC

@@ -303,6 +303,87 @@ def test_invalid_rate_rejected(tmp_path, rate):
         SharedRateLimiter(tmp_path / 'budget', rate)
 
 
+@pytest.mark.parametrize('rate', [0, -1, float('nan'), float('inf')])
+def test_invalid_fallback_setting_rejected(rate):
+    from dataclasses import replace
+    from config import SETTINGS
+    with pytest.raises(ValueError, match='ARC_RPC_FALLBACK_REQUESTS_PER_SECOND'):
+        replace(SETTINGS, rpc_fallback_requests_per_second=rate)
+
+
+def test_primary_and_fallback_rates_shared_separately(tmp_path):
+    clock = VirtualClock()
+    primary = SharedRateLimiter(tmp_path / 'primary', 5, clock=clock.time, sleep=clock.sleep)
+    fallback = SharedRateLimiter(tmp_path / 'fallback', 2, clock=clock.time, sleep=clock.sleep)
+    http = FakeHTTP(['0x1', '0x2', 429, 429, 429, '0x3', '0x4'])
+    p = ResilientRPCProvider('https://primary.test', 5042, primary,
+        ['https://secondary.test'], session=http, sleep=clock.sleep, fallback_limiter=fallback)
+    p.verified.add(0)
+    calls = []
+    original = http.post
+    def request(url, **kwargs):
+        calls.append((url, clock.now))
+        return original(url, **kwargs)
+    http.post = request
+    assert p.make_request('eth_blockNumber', [])['result'] == '0x1'
+    assert p.make_request('eth_blockNumber', [])['result'] == '0x2'
+    assert calls[1][1] - calls[0][1] == pytest.approx(0.2)
+    assert p.make_request('eth_blockNumber', [])['result'] == '0x3'
+    assert p.active == 1
+    assert p.make_request('eth_blockNumber', [])['result'] == '0x4'
+    secondary_times = [when for url, when in calls if url == p.urls[1]]
+    assert len(secondary_times) == 3  # Includes the fallback's chain check.
+    assert all(b-a >= 0.5 for a,b in zip(secondary_times, secondary_times[1:]))
+    # Another worker must respect the same fallback budget, while the primary
+    # can still make progress with its own budget.
+    primary.acquire()
+    assert clock.now == secondary_times[-1]
+    SharedRateLimiter(tmp_path / 'fallback', 2, clock=clock.time, sleep=clock.sleep).acquire()
+    assert clock.now == secondary_times[-1] + 0.5
+
+
+def test_fallback_cooldown_goes_to_fallback_budget_only():
+    fallback = Mock()
+    p, http, clock = provider([[]], fallback_urls=['https://secondary.test'], fallback_limiter=fallback)
+    p.active = 1
+    p.verified.add(1)
+    original = http.post
+    pending = [True]
+    def request(url, **kwargs):
+        if pending:
+            pending.pop()
+            return Mock(status_code=429, headers={'Retry-After': '5'})
+        return original(url, **kwargs)
+    http.post = request
+    assert p.make_request('eth_getLogs', [{}])['result'] == []
+    assert fallback.acquire.call_count == 2
+    fallback.defer.assert_called_once_with(5)
+    p.limiter.acquire.assert_not_called()
+    p.limiter.defer.assert_not_called()
+    assert clock.waits == [5]
+
+
+def test_arc_rpc_wires_distinct_shared_budgets(tmp_path, monkeypatch):
+    import config
+    from dataclasses import replace
+    settings = replace(config.SETTINGS, rpc_requests_per_second=5,
+        rpc_fallback_requests_per_second=2, rpc_fallback_urls=('https://secondary.test',),
+        rpc_rate_limit_file=str(tmp_path / 'rate.sqlite3'),
+        trusted_dex_registry=str(tmp_path / 'missing.json'))
+    monkeypatch.setattr(config, 'SETTINGS', settings)
+    first = ArcRPC('https://primary.test', 5042).w3.provider
+    second = ArcRPC('https://primary.test', 5042).w3.provider
+    try:
+        assert first.limiter.interval == 0.2
+        assert first.fallback_limiter.interval == 0.5
+        assert first.limiter.path != first.fallback_limiter.path
+        assert first.limiter.path == second.limiter.path
+        assert first.fallback_limiter.path == second.fallback_limiter.path
+    finally:
+        first.session.close()
+        second.session.close()
+
+
 def test_all_web3_methods_and_eth_call_share_budget(tmp_path):
     clock = VirtualClock()
     limiter = SharedRateLimiter(tmp_path / 'budget', 2, clock=clock.time, sleep=clock.sleep)

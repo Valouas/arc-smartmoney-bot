@@ -23,7 +23,10 @@ class ArcRPC:
         from config import SETTINGS
         self.w3 = Web3(ResilientRPCProvider(url, chain_id,
             SharedRateLimiter(SETTINGS.rpc_rate_limit_file, SETTINGS.rpc_requests_per_second),
-            SETTINGS.rpc_fallback_urls))
+            SETTINGS.rpc_fallback_urls,
+            fallback_limiter=SharedRateLimiter(
+                SETTINGS.rpc_rate_limit_file + '.fallback',
+                SETTINGS.rpc_fallback_requests_per_second) if SETTINGS.rpc_fallback_urls else None))
         self.dex_registry = TrustedDexRegistry(SETTINGS.trusted_dex_registry,chain_id)
         if not self.dex_registry.entries:
             logging.getLogger(__name__).warning("No reviewed DEX deployments configured; swaps remain research-only")
