@@ -108,3 +108,35 @@ files compile and `git diff --check` passes. A dependency emits the existing
 The public network cases and captured live fixtures verify endpoint/receipt
 assumptions. They do not certify deployment trust,
 economic history completeness, anti-Sybil completeness, or future profitability.
+
+## PR #2 live transfer pagination regression
+
+The live `/v1/explore/token-transfers?limit=3&standard=erc20` response includes
+valid row identifiers and pagination but reports `ranking.complete=false`.
+Requiring a complete ranking for this supplemental stream incorrectly persisted
+`transfers: incomplete_page_or_transport` on every cycle.
+
+Only `contracts` now requires an explicit boolean `ranking.complete=true`.
+Both streams still reject capped/truncated responses, malformed pagination,
+inconsistent `has_more`/`next`, cyclic cursors and missing row identifiers.
+Transfers provide token candidates without deployment metadata; they cannot
+establish the deployment observation epoch or replace healthy contracts coverage
+for profile eligibility and automatic promotion. An accepted transfer page clears
+its previous error through the existing cursor update; no database reset is needed.
+
+Validation: the captured three-row response failed before the fix and passes
+afterward. **124 deterministic tests pass**. The eight existing public network
+tests pass. A new public test executes the actual `launch_indexer.py --once`
+entry point in a temporary working directory with dotenv disabled, two pages per
+stream, three rows per page, and market lookups disabled. Its first run accepted
+transfers but failed on contracts. A diagnostic confirmed an Arcscan transport
+failure while paging contracts; the targeted retry passed with
+`contracts=6 transfer_tokens=5`. Both stored stream errors were `NULL` on that
+successful run. No transport/completeness guard was relaxed for the retry.
+
+To apply to an existing installation, stop the running processes, update
+`fix/issue-1-v4-audit`, run `python launch_indexer.py --once`, then
+`python status.py`. Under `DELIVERY / DISCOVERY HEALTH`, the transfers row should
+show `error: None` after an accepted page. A nonempty cursor is normal when more
+pages remain. A genuine later outage or malformed response still produces an
+error; this fix does not mask it.

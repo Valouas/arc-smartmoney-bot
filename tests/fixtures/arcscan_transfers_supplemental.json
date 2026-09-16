@@ -1,0 +1,209 @@
+{
+  "items": [
+    {
+      "block": 21183643,
+      "timestamp": 1789575089,
+      "tx_hash": "0xa2b5b7134802580118acf225ce13815243c4345e581a12dabbf61d0a2d16c9ed",
+      "tx_index": 63,
+      "log_index": 303,
+      "method": {
+        "selector": "0xdd46508f",
+        "name": "modifyLiquidities",
+        "is_precompile": false,
+        "is_creation": false
+      },
+      "token": {
+        "address": "0x3600000000000000000000000000000000000000",
+        "checksum": "0x3600000000000000000000000000000000000000",
+        "name": "USDC",
+        "symbol": "USDC",
+        "decimals": 6,
+        "standard": "erc20",
+        "is_native_interface": true,
+        "reserved_name_check": "clear",
+        "shares_reserved_name": false,
+        "unverified_lookalike": false
+      },
+      "from_address": {
+        "address": "0xc1f88546a08a4c5ce5b14aa2a03b675278208b9f",
+        "checksum": "0xc1f88546a08a4C5Ce5B14AA2a03B675278208B9f",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "to_address": {
+        "address": "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+        "checksum": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "amount": {
+        "raw": "20000000",
+        "decimals": 6,
+        "formatted": "20",
+        "usd": "20",
+        "symbol": "USDC"
+      },
+      "token_id": null,
+      "standard": "erc20",
+      "operator": null,
+      "is_native_mirror": false,
+      "native_parity": true
+    },
+    {
+      "block": 21183643,
+      "timestamp": 1789575089,
+      "tx_hash": "0x70cdb3a942591bd45b74625f3be551823e924581d7fcbd2017f31b78373e95d8",
+      "tx_index": 60,
+      "log_index": 296,
+      "method": {
+        "selector": "0xc1120e3d",
+        "name": null,
+        "is_precompile": false,
+        "is_creation": false
+      },
+      "token": {
+        "address": "0x256584276d05e0a25b2824ea6451150d64a74777",
+        "checksum": "0x256584276D05e0a25B2824Ea6451150d64A74777",
+        "name": "All Finance on Binance",
+        "symbol": "\u4e07\u4e8b\u5e01",
+        "decimals": 18,
+        "standard": "erc20",
+        "is_native_interface": false,
+        "reserved_name_check": "clear",
+        "shares_reserved_name": false,
+        "unverified_lookalike": false
+      },
+      "from_address": {
+        "address": "0x43d894e229a008c72e96872739719b9cfda941d5",
+        "checksum": "0x43d894e229a008C72e96872739719B9Cfda941d5",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "to_address": {
+        "address": "0xbb522ed86356cdf343d09a074f169d1885703d96",
+        "checksum": "0xbb522Ed86356CdF343D09A074F169d1885703d96",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "amount": {
+        "raw": "567943599089574416002820",
+        "decimals": 18,
+        "formatted": "567943.59908957441600282",
+        "usd": null,
+        "symbol": "\u4e07\u4e8b\u5e01"
+      },
+      "token_id": null,
+      "standard": "erc20",
+      "operator": null,
+      "is_native_mirror": false,
+      "native_parity": false
+    },
+    {
+      "block": 21183643,
+      "timestamp": 1789575089,
+      "tx_hash": "0x70cdb3a942591bd45b74625f3be551823e924581d7fcbd2017f31b78373e95d8",
+      "tx_index": 60,
+      "log_index": 295,
+      "method": {
+        "selector": "0xc1120e3d",
+        "name": null,
+        "is_precompile": false,
+        "is_creation": false
+      },
+      "token": {
+        "address": "0x256584276d05e0a25b2824ea6451150d64a74777",
+        "checksum": "0x256584276D05e0a25B2824Ea6451150d64A74777",
+        "name": "All Finance on Binance",
+        "symbol": "\u4e07\u4e8b\u5e01",
+        "decimals": 18,
+        "standard": "erc20",
+        "is_native_interface": false,
+        "reserved_name_check": "clear",
+        "shares_reserved_name": false,
+        "unverified_lookalike": false
+      },
+      "from_address": {
+        "address": "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+        "checksum": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "to_address": {
+        "address": "0x43d894e229a008c72e96872739719b9cfda941d5",
+        "checksum": "0x43d894e229a008C72e96872739719B9Cfda941d5",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "amount": {
+        "raw": "567943599089574416002820",
+        "decimals": 18,
+        "formatted": "567943.59908957441600282",
+        "usd": null,
+        "symbol": "\u4e07\u4e8b\u5e01"
+      },
+      "token_id": null,
+      "standard": "erc20",
+      "operator": null,
+      "is_native_mirror": false,
+      "native_parity": false
+    }
+  ],
+  "page": {
+    "next": "eyJiIjoyMTE4MzY0MywibCI6Mjk1LCJ0Ijo2MH0",
+    "prev": null,
+    "has_more": true,
+    "window": {
+      "from_block": 0,
+      "to_block": 21183643,
+      "complete": false
+    },
+    "coverage": null
+  },
+  "total": 32815164,
+  "total_is_estimate": true,
+  "ranking": {
+    "basis": "log order, newest first",
+    "basis_phrase": {
+      "key": "logOrder",
+      "params": {}
+    },
+    "window": {
+      "from_block": 0,
+      "to_block": 21183643,
+      "complete": false
+    },
+    "computed_at": null,
+    "candidates": null,
+    "complete": false,
+    "note": "Gas on Arc is USDC, and the chain publishes every native movement twice \u2014 once from the execution-layer mirror emitter at 18 decimals, once from the ERC-20 face at 0x3600\u2026 at 6 decimals. This view keeps only logs a token contract emitted, so every dollar appears exactly once and a bare native value transfer \u2014 which emits no token log \u2014 is not listed.",
+    "note_phrases": [
+      {
+        "key": "transfersNativeTwice",
+        "params": {}
+      },
+      {
+        "key": "transfersKindToken",
+        "params": {}
+      }
+    ]
+  },
+  "facets": null
+}

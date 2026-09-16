@@ -119,7 +119,7 @@ def test_scanner_lock_excludes_second_owner_and_releases(tmp_path):
 
 def contract_page(address,nxt=None):
     return {'items':[{'address':address,'standard':'erc20','symbol':'X','creation_block':1,'timestamp':1}],
-            'page':{'has_more':bool(nxt),'next':nxt}}
+            'page':{'has_more':bool(nxt),'next':nxt}, 'ranking':{'complete':True}}
 
 
 def indexer(db,callback):

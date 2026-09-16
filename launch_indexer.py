@@ -56,8 +56,14 @@ class LaunchIndexer:
             nxt = self.arcscan.next_cursor(data)
             if type(page.get("has_more")) is not bool or bool(nxt)!=page["has_more"]:
                 raise ArcscanError("launch pagination incomplete")
-            if data.get("capped") or data.get("truncated") or (data.get("ranking") or {}).get("complete") is False:
+            if data.get("capped") or data.get("truncated"):
                 raise ArcscanError("launch index incomplete")
+            # Only contracts certify the deployment universe. Transfer rankings
+            # describe a supplemental window and can legitimately be incomplete.
+            if stream == "contracts":
+                ranking = data.get("ranking")
+                if not isinstance(ranking, dict) or ranking.get("complete") is not True:
+                    raise ArcscanError("launch index incomplete")
             if nxt and nxt in seen: raise ArcscanError("launch cursor cycle")
             if head is None and keys: head = keys[0]
             done = not nxt or (stop is not None and stop in keys)

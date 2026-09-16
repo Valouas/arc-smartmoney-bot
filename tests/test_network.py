@@ -5,6 +5,10 @@ Availability/schema failures fail visibly; they are not counted as successful
 empty histories. Normal pytest runs skip these tests.
 """
 import os
+import runpy
+import sys
+from dataclasses import replace
+from pathlib import Path
 import pytest
 import requests
 from arcscan import ArcscanClient
@@ -55,3 +59,38 @@ def test_live_endpoint_contracts(api,kind):
     elif kind=='concentration':
         pct,holders=api.concentration(ARGUS)
         assert pct is not None and 0<=pct<=100 and holders>0
+
+
+def test_live_launch_indexer_once(tmp_path, monkeypatch):
+    """Exercise the real --once entry point without touching the user's DB/env."""
+    import config
+    script = Path(__file__).resolve().parents[1] / 'launch_indexer.py'
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, 'argv', [str(script), '--once'])
+    monkeypatch.setattr(config, 'SETTINGS', replace(
+        config.SETTINGS,
+        arcscan_api_url='https://api.arc-scan.org/v1',
+        launch_discovery_pages=2,
+        launch_contract_page_size=3,
+        launch_transfer_page_size=3,
+        # This regression exercises both discovery streams, not market quotes.
+        launch_max_market_checks_per_cycle=0,
+    ))
+    original_init = ArcscanClient.__init__
+    def public_client(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self.s.trust_env = False
+    monkeypatch.setattr(ArcscanClient, '__init__', public_client)
+
+    namespace = runpy.run_path(str(script), run_name='__main__')
+    indexer = namespace['x']
+    try:
+        states = {r['stream']:dict(r) for r in indexer.db.db.execute('SELECT * FROM discovery_cursors')}
+        assert set(states) == {'contracts', 'transfers'}
+        for stream, state in states.items():
+            assert state['error'] is None, (stream, state)
+            assert state['cursor'] or state['completed_at'] is not None
+        assert indexer.db.db.execute('SELECT COUNT(*) FROM launch_candidates').fetchone()[0] > 0
+    finally:
+        indexer.arcscan.s.close()
+        indexer.db.db.close()
