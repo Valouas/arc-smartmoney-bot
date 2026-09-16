@@ -153,6 +153,100 @@ def test_wrong_chain_secondary_refused(caplog):
     assert len(http.calls) == 5 and p.active == 0
 
 
+def quota_provider(*, fallback=True, wrong_chain=False, retry_after=None):
+    p, http, clock = provider([[], []],
+        fallback_urls=['https://secondary.test'] if fallback else [])
+    p.urls = ('https://arc-mainnet.g.alchemy.com/v2/secret', *p.urls[1:])
+    original = http.post
+    calls = []
+    def request(url, **kwargs):
+        body = json.loads(kwargs['data'])
+        calls.append((url, body['method'], body['params']))
+        if url == p.urls[0]:
+            return Mock(status_code=403,
+                headers={'Retry-After': retry_after} if retry_after else {},
+                json=lambda: {'jsonrpc': '2.0', 'id': body['id'],
+                    'error': {'code': -32600, 'message': 'Monthly capacity limit exceeded.'}})
+        response = original(url, **kwargs)
+        if wrong_chain and body['method'] == 'eth_chainId':
+            response.json.return_value['result'] = '0x1'
+        return response
+    http.post = request
+    return p, http, clock, calls
+
+
+@pytest.mark.parametrize('verified', [False, True])
+def test_alchemy_monthly_quota_switches_without_retry(verified, caplog):
+    p, _, clock, calls = quota_provider()
+    if verified:
+        p.verified.add(0)
+    params = [{'fromBlock': '0x7', 'toBlock': '0x7'}]
+    assert p.make_request('eth_getLogs', params)['result'] == []
+    assert [c[1] for c in calls] == [
+        'eth_getLogs' if verified else 'eth_chainId', 'eth_chainId', 'eth_getLogs']
+    assert calls[-1][2] == params
+    assert p.active == 1 and not clock.waits
+    assert 'category=monthly_capacity' in caplog.text
+    assert 'secret' not in caplog.text and 'https:' not in caplog.text
+    p.make_request('eth_getLogs', params)
+    assert calls[-1][0] == p.urls[1]
+    assert sum(c[0] == p.urls[0] for c in calls) == 1
+
+
+@pytest.mark.parametrize('fallback,wrong_chain,category', [
+    (False, False, 'monthly_capacity'), (True, True, 'wrong_chain'),
+])
+def test_monthly_quota_without_usable_fallback_raises(fallback, wrong_chain, category):
+    p, _, _, calls = quota_provider(fallback=fallback, wrong_chain=wrong_chain)
+    with pytest.raises(RPCError, match=category):
+        p.make_request('eth_getLogs', [{}])
+    assert p.active == 0
+    assert not any(c[1] == 'eth_getLogs' for c in calls)
+
+
+def test_monthly_quota_retry_after_is_respected_before_fallback():
+    p, _, clock, _ = quota_provider(retry_after='5')
+    assert p.make_request('eth_getLogs', [{}])['result'] == []
+    assert clock.waits == [5]
+    p.limiter.defer.assert_called_once_with(5)
+
+
+@pytest.mark.parametrize('variant', [
+    'inactive', 'network', 'wrong_code', 'wrong_id', 'partial', 'not_json',
+    'wrong_host', 'spoofed_host', 'wrong_status',
+])
+def test_quota_recognition_does_not_mask_other_refusals(variant):
+    p, http, clock = provider([], fallback_urls=['https://secondary.test'])
+    p.urls = ('https://arc-mainnet.g.alchemy.com/v2/secret', p.urls[1])
+    if variant == 'wrong_host':
+        p.urls = ('https://primary.test', p.urls[1])
+    if variant == 'spoofed_host':
+        p.urls = ('https://arc-mainnet.g.alchemy.com.attacker.test', p.urls[1])
+    def request(url, **kwargs):
+        req = json.loads(kwargs['data'])
+        data = {'jsonrpc': '2.0', 'id': req['id'],
+                'error': {'code': -32600, 'message': 'Monthly capacity limit exceeded.'}}
+        if variant == 'inactive':
+            data['error']['message'] = 'App is inactive.'
+        if variant == 'network':
+            data['error']['message'] = 'ARC_MAINNET is not enabled for this app.'
+        if variant == 'wrong_code':
+            data['error']['code'] = -32000
+        if variant == 'wrong_id':
+            data['id'] += 1
+        if variant == 'partial':
+            data['result'] = []
+        response = Mock(status_code=400 if variant == 'wrong_status' else 403, headers={})
+        response.json.return_value = data
+        if variant == 'not_json':
+            response.json.side_effect = ValueError('secret')
+        return response
+    http.post = Mock(side_effect=request)
+    with pytest.raises(RPCError, match='category=400' if variant == 'wrong_status' else 'category=403'):
+        p.make_request('eth_getLogs', [{}])
+    assert http.post.call_count == 1 and not clock.waits and p.active == 0
+
+
 def _child_limiter(path):
     clock = VirtualClock()
     SharedRateLimiter(path, 2, clock=clock.time, sleep=clock.sleep).acquire()

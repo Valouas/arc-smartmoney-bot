@@ -44,7 +44,8 @@ pendant que le scanner attend ; cela ne signifie pas qu'il suit le head en temps
   conservé dans le budget partagé, même à la dernière tentative : les autres
   processus et le prochain cycle ne peuvent pas l'ignorer en recommençant aussitôt.
 - Aucune redirection HTTP. Aucun retry/fallback sur les autres 4xx, les réponses
-  JSON-RPC d'erreur, le JSON invalide ou une réponse malformée/partielle.
+  JSON-RPC d'erreur, le JSON invalide ou une réponse malformée/partielle, sauf
+  le refus mensuel Alchemy décrit ci-dessous.
 - Le fallback n'est essayé qu'après épuisement d'une erreur transitoire. Sa
   chaîne doit être celle configurée, **5042 pour Arc**, avant tout appel métier.
   Un mauvais chain id est refusé. Après succès, il reste actif dans ce processus
@@ -54,6 +55,28 @@ pendant que le scanner attend ; cela ne signifie pas qu'il suit le head en temps
   qu'après une vraie réponse JSON-RPC valide contenant `result: []`.
 - Les warnings du transport contiennent seulement méthode, catégorie, tentative
   et label `primary`/`fallback-N`. Aucun URL, credential ou corps de réponse.
+
+### Alchemy principal et RPC public de secours
+
+Dans votre `.env` local uniquement, utilisez l'endpoint HTTPS Arc Mainnet Alchemy
+comme `ARC_RPC_URL` et gardez l'ancien RPC dans
+`ARC_RPC_FALLBACK_URLS=https://rpc.mainnet.arc.io`. Ne commitez jamais la clé.
+Le changement prend effet au prochain redémarrage de `run_v4.py` ; il ne modifie
+ni les curseurs, ni les checkpoints. Le débit global reste à 2 requêtes/s pour
+protéger également le secours public, sans promettre un rattrapage du live.
+
+Les HTTP 429 déclenchent les trois tentatives habituelles puis le fallback.
+Alchemy documente aussi le quota mensuel épuisé comme HTTP 403, code JSON-RPC
+`-32600`, message exact `Monthly capacity limit exceeded.` :
+[référence officielle](https://www.alchemy.com/docs/reference/error-reference).
+Ce refus explicite sur un endpoint HTTPS `*.g.alchemy.com`, avec enveloppe et
+identifiant de requête valides, permet un fallback immédiat sans retenter un
+quota mensuel épuisé. `Retry-After` reste respecté et la chaîne du secours est
+vérifiée avant tout appel métier. La catégorie journalisée est `monthly_capacity`.
+Les autres 403 (clé, réseau non activé, origine interdite), erreurs ambiguës ou
+réponses partielles restent bloquantes. Sans secours utilisable, une `RPCError`
+est levée et le bloc reste à reprendre. Chaque processus conserve son secours
+après succès jusqu'au redémarrage ; le quota mensuel n'est pas sondé en boucle.
 
 Un bloc en cours est enregistré comme `pending_block` avant les appels réseau.
 Ce marqueur **ne signifie pas que le bloc est terminé**. Le checkpoint

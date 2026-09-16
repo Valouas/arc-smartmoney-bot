@@ -10,6 +10,7 @@ import random
 import re
 import sqlite3
 import time
+from urllib.parse import urlsplit
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 
@@ -116,6 +117,29 @@ def _quantity(value):
     return isinstance(value, str) and re.fullmatch(r'0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)', value) is not None
 
 
+def _alchemy_monthly_capacity(response, url, request_id):
+    """Recognize only Alchemy's documented quota refusal, never generic 403s.
+
+    https://www.alchemy.com/docs/reference/error-reference
+    The body is inspected locally and is never retained in errors or logs.
+    """
+    endpoint = urlsplit(url)
+    if (response.status_code != 403 or endpoint.scheme != 'https'
+            or not (endpoint.hostname or '').endswith('.g.alchemy.com')):
+        return False
+    try:
+        data = response.json()
+    except ValueError:
+        return False
+    if (not isinstance(data, dict) or data.get('jsonrpc') != '2.0'
+            or type(data.get('id')) is not int or data['id'] != request_id
+            or 'result' in data or not isinstance(data.get('error'), dict)):
+        return False
+    error = data['error']
+    return (type(error.get('code')) is int and error['code'] == -32600
+            and error.get('message') == 'Monthly capacity limit exceeded.')
+
+
 def _valid_log(row):
     return (isinstance(row, dict) and _hex(row.get('address'), 20)
             and _hex(row.get('transactionHash'), 32) and _hex(row.get('blockHash'), 32)
@@ -190,7 +214,8 @@ class ResilientRPCProvider(JSONBaseProvider):
     """No Web3 HTTPProvider retry layer: exactly three HTTP attempts per endpoint.
 
     A verified fallback stays active for this process until restart. Only a
-    transient failure exhausted on the active endpoint permits switching.
+    transient failure exhausted on the active endpoint, or an explicit Alchemy
+    monthly quota refusal, permits switching.
     """
     def __init__(self, url, chain_id, limiter, fallback_urls=(), *, session=None, sleep=time.sleep):
         super().__init__()
@@ -226,8 +251,10 @@ class ResilientRPCProvider(JSONBaseProvider):
                 status = response.status_code
                 if status != 200:
                     retry_after = response.headers.get('Retry-After')
-                    error = self._error(method, str(status), attempt, index, status in RETRY_STATUSES)
-                    if error.retryable and retry_after is not None:
+                    quota = _alchemy_monthly_capacity(response, self.urls[index], request_id)
+                    error = self._error(method, 'monthly_capacity' if quota else str(status),
+                                        attempt, index, status in RETRY_STATUSES)
+                    if (error.retryable or quota) and retry_after is not None:
                         try:
                             self.limiter.defer(retry_delay(attempt, retry_after))
                         except (OSError, sqlite3.Error):
@@ -267,7 +294,7 @@ class ResilientRPCProvider(JSONBaseProvider):
             if not error.retryable or attempt == MAX_ATTEMPTS:
                 # No wait is needed if giving up; a subsequent fallback must
                 # still honor the exhausted provider's Retry-After minimum.
-                if error.retryable and retry_after is not None:
+                if (error.retryable or error.category == 'monthly_capacity') and retry_after is not None:
                     error.fallback_delay = retry_delay(attempt, retry_after)
                 raise error from None
             self.sleep(retry_delay(attempt, retry_after))
@@ -293,7 +320,8 @@ class ResilientRPCProvider(JSONBaseProvider):
                 self.active = index
                 return result
             except RPCError as error:
-                if not error.retryable or index == len(self.urls) - 1:
+                if (not (error.retryable or error.category == 'monthly_capacity')
+                        or index == len(self.urls) - 1):
                     raise
                 if error.fallback_delay:
                     self.sleep(error.fallback_delay)
