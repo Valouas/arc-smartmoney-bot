@@ -8,6 +8,8 @@ from config import SETTINGS
 from storage import Storage
 from wallet_metrics import profile_from_rows
 from atomic_json import write_json
+from forward_metrics import build_forward_profile, collect_outcomes
+from market_data import DexScreenerClient
 
 logging.basicConfig(
     level=getattr(logging, SETTINGS.log_level, logging.INFO),
@@ -22,6 +24,7 @@ class WalletProfiler:
     def __init__(self):
         self.cfg = SETTINGS
         self.db = Storage()
+        self.market = DexScreenerClient(self.cfg.dexscreener_chain_id)
 
     def wallets(self):
         return [r[0] for r in self.db.db.execute(
@@ -106,15 +109,14 @@ class WalletProfiler:
         return out
 
     def profile_wallet(self, wallet):
-        active = self._active_hours(wallet)
-        opportunities = self._opportunities(active)
-        entries = self._launch_entries(wallet)
-        opportunities = max(opportunities, len(entries))
-        profile = profile_from_rows(wallet, entries, opportunities, len(active), self.cfg)
-        profile["generated_at"] = int(time.time())
-        return profile
+        return build_forward_profile(self.db,wallet,self.cfg)
 
     def cycle(self):
+        # Register targets before sampling; stale targets become MISSING, never
+        # a convenient late quote or retrospective maximum.
+        wallets = self.wallets()
+        for w in wallets: self.profile_wallet(w)
+        collect_outcomes(self.db,self.market)
         profiles = []
         for w in self.wallets():
             p = self.profile_wallet(w)

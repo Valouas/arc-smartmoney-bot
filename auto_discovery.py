@@ -12,6 +12,7 @@ from discovery_parser import extract_transfer_rows, extract_tx_hashes
 from wallet_metrics import profile_from_rows
 from identity_graph import IdentityGraph
 from atomic_json import write_json
+from forward_metrics import build_forward_profile
 
 logging.basicConfig(level=getattr(logging, SETTINGS.log_level, logging.INFO), format="%(asctime)s %(levelname)s %(message)s")
 log=logging.getLogger("auto-discovery")
@@ -112,12 +113,11 @@ class AutoDiscovery:
         for h in hashes:
             try:
                 tx=self.rpc.w3.eth.get_transaction(h)
-                if str(tx.get("from","")).lower()!=wallet.lower(): continue
                 receipt=self.rpc.get_receipt(h)
                 if int(receipt.get("status",1))!=1: continue
                 block=self.rpc.get_block(int(tx["blockNumber"]),full_transactions=False)
                 ts=int(block["timestamp"])
-                detected=classify_trade(self.rpc,receipt,wallet,self.cfg.min_usdc_flow,native_value_wei=int(tx.get("value",0) or 0),strict=True)
+                detected=classify_trade(self.rpc,receipt,wallet,self.cfg.min_usdc_flow,native_value_wei=int(tx.get("value",0) or 0) if str(tx.get("from","")).lower()==wallet.lower() else 0,strict=True)
             except Exception as exc:
                 raise ArcscanError("wallet reconstruction incomplete") from exc
             for d in detected:
@@ -179,11 +179,23 @@ class AutoDiscovery:
         return out
 
     def profile_candidate(self,row):
-        wallet=row["wallet"].lower(); active=self._active_hours(wallet); entries=self._candidate_entries(wallet)
-        opportunities=max(len(entries),self._opportunity_count(active))
-        p=profile_from_rows(wallet,entries,opportunities,len(active),self.cfg)
-        p["generated_at"]=int(time.time()); p["source_winners"]=int(row["source_winners"]); p["best_early_rank"]=row["best_early_rank"]
+        p=build_forward_profile(self.db,row["wallet"],self.cfg)
+        p["source_winners"]=int(row["source_winners"])
+        p["best_early_rank"]=row["best_early_rank"]
+        p["independent_winners"]=self._independent_winners(p.get("winner_tokens",[]))
         return p
+
+    def _independent_winners(self,tokens):
+        deployers=[]
+        for token in tokens:
+            row=self.db.db.execute("SELECT deployer FROM launch_candidates WHERE token=?",(token.lower(),)).fetchone()
+            if not row or not row[0]: return 0
+            deployers.append(row[0].lower())
+        graph=IdentityGraph(self.arc)
+        graph.refresh(list(set(deployers)))
+        # Different token addresses from the same creator/funding component
+        # supply only one confirmation. Unknown/shared service funding is unknown.
+        return len({graph.identity_id(w) for w in deployers if graph.eligible(w)})
 
     def _funding_collision(self,wallet):
         promoted=[r["wallet"] for r in self.db.db.execute("SELECT wallet FROM promoted_wallets WHERE enabled=1").fetchall()]
@@ -205,6 +217,8 @@ class AutoDiscovery:
             if p["opportunity_capture_rate"] > self.cfg.promotion_max_capture_rate: reasons.append("capture_rate_too_high")
             if p["profile_class"] in {"SCANNER_BOT","IGNORE"}: reasons.append("bad_profile_class")
             if not p["confirmation_eligible"]: reasons.append("not_confirmation_eligible")
+            if p.get("profile_version") != 2 or not p.get("data_quality_ok"): reasons.append("forward_evidence_incomplete")
+            if p.get("independent_winners",0) < self.cfg.promotion_min_winners: reasons.append("related_or_unknown_winner_deployers")
             if p["evaluable_trades"] < self.cfg.profile_min_evaluable_trades: reasons.append("insufficient_evaluable_history")
             if p["winners"] < self.cfg.promotion_min_winners: reasons.append("insufficient_verified_winners")
             if self._funding_collision(row["wallet"]): reasons.append("funding_unknown_or_related")

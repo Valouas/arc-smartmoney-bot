@@ -1,5 +1,7 @@
 from __future__ import annotations
 import sqlite3, json, time
+from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 
 SCHEMA = """
@@ -126,19 +128,23 @@ CREATE TABLE IF NOT EXISTS wallet_profiles (
 class Storage:
     def __init__(self, path="data/arc_bot.sqlite3"):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.path = str(Path(path).resolve())
+        self._transaction_depth = 0
         self.db = sqlite3.connect(path, timeout=10)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA busy_timeout=10000")
         self.db.executescript(SCHEMA + V4_SCHEMA)
         self._migrate()
-        self.db.commit()
+        self.commit()
 
     def _migrate(self):
         # Serialize check-and-alter across all four processes (WAL is not a
         # substitute for a migration lock). Additive migration preserves V3/V4.
         self.db.execute("BEGIN IMMEDIATE")
         try:
+            version=self.db.execute("PRAGMA user_version").fetchone()[0]
+            if version>2: raise RuntimeError("Database schema newer than this application")
             columns = {r[1] for r in self.db.execute("PRAGMA table_info(discovery_candidates)")}
             if "history_complete" not in columns:
                 self.db.execute("ALTER TABLE discovery_candidates ADD COLUMN history_complete INTEGER NOT NULL DEFAULT 0")
@@ -153,11 +159,72 @@ class Storage:
             self.db.execute("CREATE TABLE IF NOT EXISTS processed_events (tx_hash TEXT, wallet TEXT, token TEXT, side TEXT, PRIMARY KEY(tx_hash,wallet,token,side))")
             self.db.execute("CREATE TABLE IF NOT EXISTS scanner_state (key TEXT PRIMARY KEY, value INTEGER NOT NULL)")
             self.db.execute("CREATE TABLE IF NOT EXISTS snapshot_attempts (token TEXT, horizon INTEGER, checked_at INTEGER NOT NULL, PRIMARY KEY(token,horizon))")
-            self.db.execute("PRAGMA user_version=1")
-            self.db.commit()
+            for statement in FOLLOWUP_SCHEMA.split(";"):
+                if statement.strip(): self.db.execute(statement)
+            if version<2:
+                self.db.execute("UPDATE discovery_candidates SET status='QUARANTINE',promotion_reason='requires_forward_validation' WHERE status='PROMOTED'")
+                self.db.execute("UPDATE promoted_wallets SET enabled=0")
+            self.db.execute("PRAGMA user_version=2")
+            self.commit()
         except Exception:
             self.db.rollback()
             raise
+
+    def commit(self):
+        if not self._transaction_depth:
+            self.db.commit()
+
+    @contextmanager
+    def transaction(self):
+        outer = self._transaction_depth == 0
+        savepoint = f"nested_{self._transaction_depth}"
+        self.db.execute("BEGIN IMMEDIATE" if outer else f"SAVEPOINT {savepoint}")
+        self._transaction_depth += 1
+        try:
+            yield
+        except BaseException:
+            if outer: self.db.rollback()
+            else:
+                self.db.execute(f"ROLLBACK TO {savepoint}")
+                self.db.execute(f"RELEASE {savepoint}")
+            raise
+        else:
+            if outer: self.db.commit()
+            else: self.db.execute(f"RELEASE {savepoint}")
+        finally:
+            self._transaction_depth -= 1
+
+    def save_runtime_event(self, e):
+        self.db.execute("INSERT OR REPLACE INTO runtime_events VALUES(?,?,?,?,?,?)",
+                        (e.tx_hash.lower(),e.wallet.lower(),e.token.lower(),e.side,e.timestamp,json.dumps(asdict(e))))
+        self.commit()
+
+    def recent_runtime_events(self, cutoff):
+        from models import TradeEvent
+        return [TradeEvent(**json.loads(r[0])) for r in self.db.execute(
+            "SELECT payload FROM runtime_events WHERE timestamp>=? ORDER BY timestamp,rowid", (cutoff,))]
+
+    def observe_wallet(self, wallet, tx_hash, block, timestamp):
+        self.db.execute("INSERT OR IGNORE INTO wallet_activity VALUES(?,?,?,?)",
+                        (wallet.lower(),tx_hash.lower(),block,timestamp))
+        self.commit()
+
+    def mark_wallet_coverage(self, wallet, block, timestamp):
+        self.db.execute("INSERT OR IGNORE INTO wallet_coverage VALUES(?,?,?)", (wallet.lower(),block,timestamp))
+        self.commit()
+
+    def enqueue(self, key, text):
+        self.db.execute("INSERT OR IGNORE INTO alert_outbox(id,text,state,created_at,next_attempt) VALUES(?,?,'PENDING',?,0)",
+                        (key,text,int(time.time())))
+        self.commit()
+
+    def save_proposal(self, payload):
+        row = self.db.execute("SELECT payload FROM proposals WHERE token=? AND side=? AND status='PENDING_HUMAN_REVIEW'",
+                              (payload["token"].lower(),payload["side"])).fetchone()
+        if row: return json.loads(row[0]), False
+        self.db.execute("INSERT INTO proposals VALUES(?,?,?,?,?)", (payload["id"],payload["token"].lower(),payload["side"],payload["status"],json.dumps(payload)))
+        self.commit()
+        return payload, True
 
     def wallet_eligible(self, wallet):
         row = self.db.execute("SELECT status,history_complete FROM discovery_candidates WHERE wallet=?", (wallet.lower(),)).fetchone()
@@ -172,11 +239,11 @@ class Storage:
     def mark_event_processed(self, e):
         self.db.execute("INSERT OR IGNORE INTO processed_events VALUES(?,?,?,?)",
                         (e.tx_hash.lower(), e.wallet.lower(), e.token.lower(), e.side))
-        self.db.commit()
+        self.commit()
 
     def checkpoint(self, block):
         self.db.execute("INSERT OR REPLACE INTO scanner_state VALUES('next_block', ?)", (block,))
-        self.db.commit()
+        self.commit()
 
     def next_block(self):
         row = self.db.execute("SELECT value FROM scanner_state WHERE key='next_block'").fetchone()
@@ -188,7 +255,7 @@ class Storage:
 
     def mark_tx(self, tx_hash: str, block_number: int, ts: int):
         self.db.execute("INSERT OR IGNORE INTO seen_txs VALUES (?,?,?)", (tx_hash, block_number, ts))
-        self.db.commit()
+        self.commit()
 
     def add_event(self, e):
         if self.db.execute("SELECT 1 FROM events WHERE lower(tx_hash)=? AND lower(wallet)=? AND lower(token)=? AND side=?",
@@ -199,7 +266,7 @@ class Storage:
                VALUES(?,?,?,?,?,?,?,?,?,?)""",
             (e.tx_hash,e.block_number,e.timestamp,e.wallet,e.side,e.token,e.token_symbol,e.token_amount,e.usdc_amount,int(e.trade_verified))
         )
-        self.db.commit()
+        self.commit()
 
     def add_trade_context(self, e, market):
         if market is None:
@@ -215,17 +282,25 @@ class Storage:
                 market.fdv_usd, market.pair_created_at_ms, market.pair_address
             )
         )
-        self.db.commit()
+        self.commit()
 
     def add_signal(self, s):
-        self.db.execute(
+        cursor = self.db.execute(
             "INSERT INTO signals(created_at,token,side,status,score,payload) VALUES(?,?,?,?,?,?)",
             (int(time.time()), s.token, s.side, s.status, s.score, json.dumps(s.to_dict(), default=str))
         )
-        self.db.commit()
+        self.commit()
+        return cursor.lastrowid
+
+    def register_signal_outcome(self, signal_id, token, cfg):
+        if self.db.execute("SELECT 1 FROM trade_outcomes WHERE wallet='signal' AND token=?", (token.lower(),)).fetchone(): return
+        now=int(time.time()); target=now+cfg.outcome_horizon_seconds
+        self.db.execute("INSERT OR IGNORE INTO trade_outcomes(tx_hash,wallet,token,entry_at,target_at,deadline_at) VALUES(?,'signal',?,?,?,?)",
+                        ("signal:"+str(signal_id),token.lower(),now,target,target+cfg.outcome_grace_seconds))
+        self.commit()
 
     def get_position(self, token: str):
-        return self.db.execute("SELECT * FROM paper_positions WHERE token=?", (token,)).fetchone()
+        return self.db.execute("SELECT * FROM paper_positions WHERE lower(token)=lower(?)", (token,)).fetchone()
 
     def open_position(self, token, symbol, ts, price, notional, qty):
         changed = self.db.execute(
@@ -233,7 +308,7 @@ class Storage:
                VALUES(?,?,?,?,?,?, 'OPEN')""",
             (token,symbol,ts,price,notional,qty)
         ).rowcount
-        self.db.commit()
+        self.commit()
         return changed == 1
 
     def close_position(self, token, ts, price, pnl, reason):
@@ -242,7 +317,7 @@ class Storage:
                WHERE token=? AND status='OPEN'""",
             (ts,price,pnl,reason,token)
         ).rowcount
-        self.db.commit()
+        self.commit()
         return changed == 1
 
     def open_positions(self):
@@ -266,7 +341,7 @@ class Storage:
             """,
             (token.lower(), now, source, symbol, name, deployer, deployment_block, deployed_at)
         )
-        self.db.commit()
+        self.commit()
 
     def due_candidates(self, recheck_seconds, expire_hours, limit=40):
         now = int(time.time())
@@ -282,11 +357,11 @@ class Storage:
 
     def mark_candidate_checked(self, token):
         self.db.execute("UPDATE launch_candidates SET last_checked_at=? WHERE token=?", (int(time.time()), token.lower()))
-        self.db.commit()
+        self.commit()
 
     def mark_candidate_status(self, token, status):
         self.db.execute("UPDATE launch_candidates SET status=?,last_checked_at=? WHERE token=?", (status, int(time.time()), token.lower()))
-        self.db.commit()
+        self.commit()
 
     def add_launch(self, candidate, market, source):
         pair_created_at = int((market.pair_created_at_ms or int(time.time()*1000)) / 1000)
@@ -304,7 +379,7 @@ class Storage:
             )
         )
         self.db.execute("UPDATE launch_candidates SET status='LIVE',last_checked_at=? WHERE token=?", (int(time.time()), candidate["token"].lower()))
-        self.db.commit()
+        self.commit()
 
     def launches_due_snapshot(self, horizons=(5,15,60,360,1440), limit=100):
         now = int(time.time())
@@ -324,7 +399,7 @@ class Storage:
         selected = out[:limit]
         self.db.executemany("INSERT OR REPLACE INTO snapshot_attempts VALUES(?,?,?)",
                             [(r["token"], h, now) for r,h,_ in selected])
-        self.db.commit()
+        self.commit()
         return selected
 
     def save_launch_snapshot(self, token, horizon, target_at, market):
@@ -339,7 +414,7 @@ class Storage:
              market.liquidity_usd, market.market_cap_usd, market.fdv_usd, market.volume_m5,
              market.volume_h1, market.buys_m5, market.sells_m5)
         )
-        self.db.commit()
+        self.commit()
 
     def save_wallet_profile(self, profile):
         self.db.execute(
@@ -351,7 +426,7 @@ class Storage:
              profile["profile_class"], profile["recommended_weight"],
              1 if profile["confirmation_eligible"] else 0, json.dumps(profile, default=str))
         )
-        self.db.commit()
+        self.commit()
 
     def add_research_trade(self, e):
         price = (e.usdc_amount / e.token_amount) if e.token_amount else None
@@ -366,7 +441,7 @@ class Storage:
             (e.tx_hash,e.wallet.lower(),e.block_number,e.timestamp,e.side,e.token.lower(),
              e.token_symbol,e.token_amount,e.usdc_amount,price,int(e.trade_verified))
         )
-        self.db.commit()
+        self.commit()
 
     def upsert_discovery_candidate(self, wallet, token, rank):
         now=int(time.time())
@@ -383,7 +458,7 @@ class Storage:
                        best_early_rank=CASE WHEN best_early_rank IS NULL THEN ? WHEN ? < best_early_rank THEN ? ELSE best_early_rank END
                    WHERE wallet=?""", (now,rank,rank,rank,w)
             )
-        self.db.commit()
+        self.commit()
 
     def save_promoted_wallet(self, wallet, score, profile_class, weight, label):
         now=int(time.time())
@@ -395,7 +470,7 @@ class Storage:
             """UPDATE discovery_candidates SET status='PROMOTED',profile_score=?,profile_class=?,promotion_reason='passed_v4_gates' WHERE wallet=?""",
             (score,profile_class,wallet.lower())
         )
-        self.db.commit()
+        self.commit()
 
 V4_SCHEMA = """
 CREATE TABLE IF NOT EXISTS discovery_winners (
@@ -446,5 +521,56 @@ CREATE TABLE IF NOT EXISTS promoted_wallets (
     weight INTEGER NOT NULL,
     label TEXT,
     enabled INTEGER NOT NULL DEFAULT 1
+);
+"""
+
+FOLLOWUP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS runtime_events (
+    tx_hash TEXT, wallet TEXT, token TEXT, side TEXT, timestamp INTEGER NOT NULL,
+    payload TEXT NOT NULL, PRIMARY KEY(tx_hash,wallet,token,side)
+);
+CREATE TABLE IF NOT EXISTS wallet_activity (
+    wallet TEXT, tx_hash TEXT, block INTEGER NOT NULL, timestamp INTEGER NOT NULL,
+    PRIMARY KEY(wallet,tx_hash)
+);
+CREATE TABLE IF NOT EXISTS wallet_coverage (
+    wallet TEXT, block INTEGER, timestamp INTEGER NOT NULL, PRIMARY KEY(wallet,block)
+);
+CREATE TABLE IF NOT EXISTS alert_outbox (
+    id TEXT PRIMARY KEY, text TEXT NOT NULL, state TEXT NOT NULL,
+    created_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt INTEGER NOT NULL, last_error TEXT, message_id TEXT
+);
+CREATE TABLE IF NOT EXISTS proposals (
+    id TEXT PRIMARY KEY, token TEXT NOT NULL, side TEXT NOT NULL,
+    status TEXT NOT NULL, payload TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_proposal ON proposals(token,side)
+    WHERE status='PENDING_HUMAN_REVIEW';
+CREATE TABLE IF NOT EXISTS discovery_cursors (
+    stream TEXT PRIMARY KEY, cursor TEXT, stop_key TEXT, head_key TEXT,
+    seen_cursors TEXT NOT NULL DEFAULT '[]', completed_at INTEGER, error TEXT
+);
+CREATE TABLE IF NOT EXISTS observation_epochs (
+    name TEXT PRIMARY KEY, started_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trade_outcomes (
+    tx_hash TEXT, wallet TEXT, token TEXT, entry_at INTEGER NOT NULL,
+    target_at INTEGER NOT NULL, deadline_at INTEGER NOT NULL,
+    observed_at INTEGER, price REAL, status TEXT NOT NULL DEFAULT 'PENDING',
+    PRIMARY KEY(tx_hash,wallet,token)
+);
+CREATE TABLE IF NOT EXISTS reconstruction_gaps (
+    wallet TEXT, tx_hash TEXT, reason TEXT NOT NULL, observed_at INTEGER NOT NULL,
+    PRIMARY KEY(wallet,tx_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_due ON alert_outbox(state,next_attempt);
+CREATE INDEX IF NOT EXISTS idx_activity_wallet_ts ON wallet_activity(wallet,timestamp);
+CREATE INDEX IF NOT EXISTS idx_outcomes_due ON trade_outcomes(status,target_at,deadline_at);
+CREATE INDEX IF NOT EXISTS idx_runtime_ts ON runtime_events(timestamp);
+CREATE TABLE IF NOT EXISTS paper_fills (
+    id TEXT PRIMARY KEY, token TEXT NOT NULL, side TEXT NOT NULL,
+    timestamp INTEGER NOT NULL, quantity REAL NOT NULL, price REAL NOT NULL,
+    fee REAL NOT NULL, realized_pnl REAL NOT NULL DEFAULT 0
 );
 """

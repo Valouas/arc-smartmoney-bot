@@ -9,7 +9,14 @@ class ClusterBook:
         self.sell_window = sell_window
         self.events = defaultdict(lambda: {"BUY": deque(), "SELL": deque()})
 
+    def prune(self, now):
+        for token in list(self.events):
+            for side,window in (("BUY",self.buy_window),("SELL",self.sell_window)):
+                self.events[token][side]=deque(e for e in self.events[token][side] if e.timestamp>=now-window)
+            if not any(self.events[token].values()): del self.events[token]
+
     def add(self, event: TradeEvent) -> ClusterSignal:
+        self.prune(event.timestamp or int(time.time()))
         now = event.timestamp or int(time.time())
         q = self.events[event.token][event.side]
         q.append(event)

@@ -53,12 +53,12 @@ def receipt(logs, swap=True):
 
 
 def rpc():
-    return SimpleNamespace(token_meta=lambda _: {'decimals':18, 'symbol':'TEST'})
+    return SimpleNamespace(token_meta=lambda _: {'decimals':18, 'symbol':'TEST'}, swap_emitter_trusted=lambda *a:True)
 
 
 @pytest.mark.parametrize('wire',[False,True])
 def test_erc20_swap_router_multihop_and_topic_formats(wire):
-    r = receipt([transfer(USDC_ERC20,W,ROUTER,100*10**6,wire),
+    r = receipt([transfer(USDC_ERC20,W,ROUTER,100*10**6,wire),transfer(USDC_ERC20,ROUTER,POOL,100*10**6,wire),
                  transfer(T,POOL,ROUTER,5*10**18,wire), transfer(T,ROUTER,W,5*10**18,wire)])
     result = classify_trade(rpc(),r,W,25)
     assert len(result)==1 and result[0]['confirmation_eligible']
@@ -86,8 +86,8 @@ def test_basket_and_unknown_decimals():
 
 @pytest.mark.parametrize('sell',[False,True])
 def test_native_mirror_refunds_and_sell(sell):
-    logs=[transfer(NATIVE_MIRROR,W,ROUTER,100*10**18),transfer(NATIVE_MIRROR,ROUTER,W,20*10**18),transfer(T,POOL,W,10**18)]
-    if sell: logs=[transfer(NATIVE_MIRROR,ROUTER,W,80*10**18),transfer(T,W,POOL,10**18)]
+    logs=[transfer(NATIVE_MIRROR,W,ROUTER,100*10**18),transfer(NATIVE_MIRROR,ROUTER,POOL,80*10**18),transfer(NATIVE_MIRROR,ROUTER,W,20*10**18),transfer(T,POOL,W,10**18)]
+    if sell: logs=[transfer(NATIVE_MIRROR,POOL,ROUTER,80*10**18),transfer(NATIVE_MIRROR,ROUTER,W,80*10**18),transfer(T,W,POOL,10**18)]
     r=receipt(logs)
     out=classify_trade(rpc(),r,W,25,native_value_wei=100*10**18 if not sell else 0)
     assert out[0]['usdc_amount']==80 and out[0]['confirmation_eligible']
@@ -263,7 +263,7 @@ def test_four_process_migration_and_source_race(tmp_path):
     db=Storage(path)
     assert db.db.execute('SELECT source_winners FROM discovery_candidates').fetchone()[0]==1
     assert db.db.execute('PRAGMA journal_mode').fetchone()[0]=='wal'
-    assert db.db.execute('PRAGMA user_version').fetchone()[0]==1
+    assert db.db.execute('PRAGMA user_version').fetchone()[0]==2
     assert not db.wallet_eligible(W)
     db.db.close()
 
@@ -281,7 +281,7 @@ def test_snapshot_delay_and_candidate_fairness(db,monkeypatch):
 
 def test_identity_direct_funding_unknown_exchange_and_refresh():
     data={W:{'funded_by':POOL},T:{'funded_by':W}}
-    g=IdentityGraph(SimpleNamespace(address_facts=lambda a:data.get(a,{})))
+    g=IdentityGraph(SimpleNamespace(address_facts=lambda a:data.get(a,{})),cache_seconds=0)
     g.refresh([W,T,ROUTER]); assert g.related(W,T) and not g.eligible(ROUTER)
     data[T]={'funded_by':ROUTER}; g.refresh([W,T]); assert not g.related(W,T)
     shared={'funded_by':{'address':POOL,'category':'exchange'}}
@@ -302,10 +302,10 @@ def test_paper_exits_are_once_and_bad_prices_ignored(db):
     p=PaperTrader(db,Settings())
     market=SimpleNamespace(token_snapshot=lambda _:MarketSnapshot(T,price_usd=float('nan')))
     assert not p.evaluate_stops(market)
-    market.token_snapshot=lambda _:MarketSnapshot(T,price_usd=0.5)
+    market.token_snapshot=lambda _:MarketSnapshot(T,price_usd=0.5,liquidity_usd=50000,volume_m5=5000)
     assert len(p.evaluate_stops(market))==1
     assert not p.evaluate_stops(market)
-    assert db.get_position(T)['pnl_usd']==-50
+    assert db.get_position(T)['pnl_usd'] < -50  # Fees and slippage are now charged.
     assert not db.close_position(T,1,0.5,-50,'duplicate')
 
 
@@ -313,7 +313,7 @@ def test_scanner_receipt_retry_and_event_retry(db,monkeypatch):
     b=ArcSmartMoneyBot.__new__(ArcSmartMoneyBot); b.cfg=Settings(); b.db=db
     b.watch={W:WalletInfo(W,'w',3,'seed')}
     tx={'from':W,'hash':HexBytes(H),'value':0}
-    b.rpc=SimpleNamespace(get_block=lambda *a,**k:{'timestamp':1000,'transactions':[tx]},get_receipt=Mock(side_effect=RuntimeError('offline')))
+    b.rpc=SimpleNamespace(get_block=lambda *a,**k:{'timestamp':1000,'transactions':[tx]},get_receipt=Mock(side_effect=RuntimeError('offline')),watched_participants=lambda *a:{})
     with pytest.raises(RuntimeError): b.process_block(1)
     assert not db.tx_seen(H)
     b.rpc.get_receipt=Mock(return_value={'status':1})
@@ -324,7 +324,10 @@ def test_scanner_receipt_retry_and_event_retry(db,monkeypatch):
     b.handle_event=Mock(side_effect=RuntimeError('market down'))
     with pytest.raises(RuntimeError): b.process_block(1)
     assert not db.tx_seen(H)
-    b.handle_event=Mock(); b.process_block(1); b.process_block(1)
+    def persist(e):
+        with db.transaction():
+            db.add_event(e); db.mark_event_processed(e)
+    b.handle_event=Mock(side_effect=persist); b.process_block(1); b.process_block(1)
     assert b.handle_event.call_count==1 and db.tx_seen(H)
     assert db.db.execute('SELECT count(*) FROM events').fetchone()[0]==1
     db.checkpoint(2); assert db.next_block()==2
@@ -369,7 +372,7 @@ def test_insufficient_evaluable_profile_cannot_promote(db):
 def test_good_profile_promotes_only_after_gates(db):
     d=discovery(db); db.upsert_discovery_candidate(W,T,1)
     db.db.execute('UPDATE discovery_candidates SET hydrated_at=1,history_complete=1,first_discovered_at=1,source_winners=3'); db.db.commit()
-    p={'wallet':W,'generated_at':1,'smart_score':80,'profile_class':'SMART','recommended_weight':3,'confirmation_eligible':True,'launches_bought':10,'opportunity_capture_rate':0.1,'evaluable_trades':8,'winners':3}
+    p={'wallet':W,'generated_at':1,'smart_score':80,'profile_class':'SMART','recommended_weight':3,'confirmation_eligible':True,'launches_bought':10,'opportunity_capture_rate':0.1,'evaluable_trades':8,'winners':3,'profile_version':2,'data_quality_ok':True,'independent_winners':3}
     d.profile_candidate=lambda _:p; d._funding_collision=lambda _:False; d.write_generated_watchlist=Mock()
     assert d.promote_candidates()==1 and db.wallet_eligible(W)
 

@@ -4,6 +4,7 @@ from collections import defaultdict
 from typing import Optional
 import time
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 @dataclass
 class WalletFacts:
@@ -36,11 +37,14 @@ def _first_address(value):
     return None
 
 class IdentityGraph:
-    def __init__(self, arcscan_client):
+    def __init__(self, arcscan_client, cache_seconds=3600, workers=4):
         self.arcscan = arcscan_client
         self.facts: dict[str, WalletFacts] = {}
         self.parent: dict[str, str] = {}
         self.last_refresh = 0.0
+        self.cache_seconds = cache_seconds
+        self.workers = max(1,min(workers,8))
+        self._retry = {}
 
     def _make(self, x: str):
         x = x.lower(); self.parent.setdefault(x, x)
@@ -56,24 +60,47 @@ class IdentityGraph:
         if ra != rb: self.parent[rb] = ra
 
     def refresh(self, wallets: list[str]):
-        self.parent = {}
-        self.facts = {}
-        funder_buckets = defaultdict(list)
-        wallets = list(dict.fromkeys(a.lower() for a in wallets))
-        for addr in wallets:
-            addr = addr.lower(); self._make(addr)
-            try: facts = self._parse_facts(addr, self.arcscan.address_facts(addr))
-            except Exception: facts = WalletFacts(address=addr)
-            self.facts[addr] = facts
+        old=self.facts
+        self.parent={}; self.facts={}
+        now=time.time()
+        wallets=list(dict.fromkeys(a.lower() for a in wallets))
+        def fetch(addr):
+            cached=old.get(addr)
+            if cached and cached.funded_by and now-cached.fetched_at<self.cache_seconds:
+                return addr,cached
+            retry=self._retry.get(addr,(0,0))
+            if now<retry[1]: return addr,WalletFacts(address=addr)
+            try:
+                # requests.Session is not shared across worker threads.
+                if hasattr(self.arcscan,"base"):
+                    from arcscan import ArcscanClient
+                    client=ArcscanClient(self.arcscan.base)
+                    try: data=client.address_facts(addr)
+                    finally: client.s.close()
+                else: data=self.arcscan.address_facts(addr)
+                return addr,self._parse_facts(addr,data)
+            except Exception: return addr,WalletFacts(address=addr)
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            fetched=list(pool.map(fetch,wallets))
+            funders=list({f.funded_by for _,f in fetched if f.funded_by and not f.shared_service}-set(wallets))[:128]
+            fetched.extend(pool.map(fetch,funders))
+        for addr,facts in fetched:
+            self._make(addr); self.facts[addr]=facts
+            if facts.funded_by:
+                self._retry.pop(addr,None)
+            else:
+                failures=self._retry.get(addr,(0,0))[0]+1
+                self._retry[addr]=(failures,now+min(3600,30*2**min(failures-1,7)))
+        shared={addr for addr,f in self.facts.items() if f.shared_service}
+        buckets=defaultdict(list)
+        for addr,facts in self.facts.items():
             if facts.funded_by and not facts.shared_service:
-                funder_buckets[facts.funded_by].append(addr)
-                if facts.funded_by in wallets:
-                    self.union(addr, facts.funded_by)
-        for _, members in funder_buckets.items():
-            if len(members) > 1:
-                lead = members[0]
-                for other in members[1:]: self.union(lead, other)
-        self.last_refresh = time.time()
+                buckets[facts.funded_by].append(addr)
+        for funder,members in buckets.items():
+            if funder in shared: continue
+            for addr in members:
+                self.union(addr,funder)
+        self.last_refresh=time.time()
 
     def _parse_facts(self, addr: str, data) -> WalletFacts:
         facts = WalletFacts(address=addr, fetched_at=int(time.time()))
@@ -88,7 +115,7 @@ class IdentityGraph:
                         label = value.get("label") or {}
                         category = value.get("category") or (label.get("category") if isinstance(label, dict) else None)
                         facts.shared_service = category in {"exchange", "bridge", "faucet", "custodian"}
-            if facts.first_tx_hash is None and "first" in path and "tx" in path:
+            if facts.first_tx_hash is None and ("first" in path and "tx" in path or path=="first.hash"):
                 if isinstance(value, str) and value.startswith("0x") and len(value) == 66: facts.first_tx_hash = value
             if facts.first_block is None and "first" in path and "block" in path:
                 try: facts.first_block = int(value)
@@ -109,3 +136,35 @@ class IdentityGraph:
         for w in self.parent: out[self.find(w)].append(w)
         return dict(out)
     def related(self, a: str, b: str) -> bool: return self.find(a) == self.find(b)
+
+
+class IdentityRefresher:
+    """Single background refresh; apply snapshots only for the current watch set."""
+    def __init__(self, client, cache_seconds=3600, workers=4):
+        self.current=IdentityGraph(client,cache_seconds,workers)
+        self.executor=ThreadPoolExecutor(max_workers=1,thread_name_prefix="identity-refresh")
+        self.future=None
+        self.requested=()
+        self.last_request=0.0
+
+    def poll(self, wallets, interval=30):
+        import copy
+        key=tuple(sorted(set(w.lower() for w in wallets)))
+        if self.future is not None and self.future.done():
+            result=self.future.result()
+            if self.requested==key: self.current=result
+            self.future=None
+        now=time.time()
+        if self.future is None and (key!=self.requested or now-self.last_request>=interval):
+            graph=IdentityGraph(self.current.arcscan,self.current.cache_seconds,self.current.workers)
+            graph.facts=copy.deepcopy(self.current.facts)
+            graph._retry=dict(self.current._retry)
+            def refresh():
+                graph.refresh(list(key))
+                return graph
+            self.requested=key; self.last_request=now
+            self.future=self.executor.submit(refresh)
+        return self.current
+
+    def close(self):
+        self.executor.shutdown(wait=True,cancel_futures=True)

@@ -28,11 +28,11 @@ class IntelligenceBook:
 
     def effective(self, wallet, fallback_score, seed_weight):
         p = self.get(wallet)
-        if not p:
-            return {"score": fallback_score, "class": "SEED", "weight": seed_weight, "eligible": True}
+        if not p or p.get("profile_version") != 2 or time.time()-p.get("generated_at",0)>max(120,self.reload_seconds*4):
+            return {"score":0,"class":"UNVERIFIED","weight":0,"eligible":False}
         return {
             "score": int(p.get("smart_score", fallback_score)),
             "class": p.get("profile_class", "WATCH"),
             "weight": int(p.get("recommended_weight", seed_weight)),
-            "eligible": bool(p.get("confirmation_eligible", True)),
+            "eligible": bool(p.get("confirmation_eligible", False) and p.get("data_quality_ok",False)),
         }

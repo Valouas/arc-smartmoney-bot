@@ -41,7 +41,7 @@ def classify_profile(metrics, cfg):
 def build_score(metrics, cfg):
     n = metrics["evaluable_trades"]
     winners = metrics["winners"]
-    hit = beta_rate(winners, n)
+    hit = beta_rate(winners, metrics.get("outcome_trials", n))
     capture = metrics["opportunity_capture_rate"]
     selectivity = 1.0 - clamp(capture)
     selectivity_quality = 0.55 * hit + 0.45 * selectivity
@@ -62,14 +62,16 @@ def build_score(metrics, cfg):
 
 def profile_from_rows(wallet, entries, opportunity_count, active_hours, cfg):
     launches_bought = len(entries)
-    evaluable = winners = 0
+    evaluable = winners = missing = pending = 0
     precocities=[]; perf_scores=[]; stakes=[]; winner_stakes=[]; exits=[]
     for e in entries:
         stake = float(e.get("usdc") or 0)
         if stake > 0: stakes.append(stake)
         precocities.append(precocity_value(e.get("age_seconds")))
-        entry = e.get("entry_price"); future = e.get("max_future_price")
-        if entry and future and entry > 0:
+        entry = e.get("entry_price"); future = e.get("outcome_price",e.get("max_future_price"))
+        missing += int(e.get("outcome_state") == "MISSING")
+        pending += int(e.get("outcome_state") == "PENDING")
+        if entry and future is not None and math.isfinite(future) and future >= 0 and entry > 0:
             evaluable += 1
             ret = (future/entry - 1) * 100
             is_winner = ret >= cfg.winner_return_pct
@@ -88,7 +90,8 @@ def profile_from_rows(wallet, entries, opportunity_count, active_hours, cfg):
     metrics = {
         "wallet": wallet.lower(), "launches_bought": launches_bought,
         "evaluable_trades": evaluable, "winners": winners,
-        "adjusted_hit_rate": beta_rate(winners, evaluable),
+        "adjusted_hit_rate": beta_rate(winners, evaluable + missing),
+        "outcome_trials": evaluable + missing, "missing_outcomes": missing, "pending_outcomes": pending,
         "opportunity_count": opportunity_count, "opportunity_capture_rate": clamp(capture),
         "active_hours": active_hours, "launch_buys_per_active_hour": launch_rate,
         "avg_precocity": sum(precocities)/len(precocities) if precocities else 0,

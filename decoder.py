@@ -13,28 +13,32 @@ SWAP_TOPICS = {
 def hex_value(value):
     return (value.hex() if hasattr(value, "hex") else str(value)).removeprefix("0x").lower()
 
-def swap_connected(receipt, token, wallet):
-    """Require a token transfer path between the wallet and a swap-emitting pool.
-
-    This supports router intermediaries but is evidence, not proof of economic intent.
-    Unknown DEX event ABIs remain research-only.
-    """
-    pools = {str(log["address"]).lower() for log in receipt.get("logs", [])
-             if log.get("topics") and hex_value(log["topics"][0]) in SWAP_TOPICS}
-    edges = []
-    for log in receipt.get("logs", []):
-        topics = log.get("topics", [])
-        if str(log.get("address", "")).lower() != token.lower() or len(topics) != 3:
-            continue
-        if hex_value(topics[0]) != hex_value(TRANSFER_TOPIC):
-            continue
-        edges.append((topic_to_address(topics[1]).lower(), topic_to_address(topics[2]).lower()))
-    reachable = {wallet.lower()}
-    for _ in range(len(edges)):
-        for a, b in edges:
-            if a in reachable or b in reachable:
-                reachable.update((a, b))
-    return bool(pools & reachable)
+def swap_connected(receipt, token, wallet, rpc, side):
+    verifier = getattr(rpc,"swap_emitter_trusted",None)
+    if verifier is None: return False
+    pools = {str(log["address"]).lower() for log in receipt.get("logs",[])
+             if log.get("topics") and hex_value(log["topics"][0]) in SWAP_TOPICS
+             and verifier(str(log["address"]),receipt.get("blockNumber","latest"))}
+    if not pools: return False
+    token_edges=[]; cash_edges=[]
+    for log in receipt.get("logs",[]):
+        topics=log.get("topics",[])
+        if len(topics)!=3 or hex_value(topics[0])!=hex_value(TRANSFER_TOPIC): continue
+        if data_to_int(log["data"])<=0: continue
+        edge=(topic_to_address(topics[1]).lower(),topic_to_address(topics[2]).lower())
+        address=str(log["address"]).lower()
+        if address==token.lower(): token_edges.append(edge)
+        elif address in (USDC_ERC20.lower(),NATIVE_MIRROR.lower()): cash_edges.append(edge)
+    def reachable(start,edges):
+        result={start}
+        for _ in edges:
+            for a,b in edges:
+                if a in result: result.add(b)
+        return result
+    for pool in pools:
+        if side=="BUY" and wallet.lower() in reachable(pool,token_edges) and pool in reachable(wallet.lower(),cash_edges): return True
+        if side=="SELL" and pool in reachable(wallet.lower(),token_edges) and wallet.lower() in reachable(pool,cash_edges): return True
+    return False
 
 def topic_to_address(topic) -> str:
     h = topic.hex() if hasattr(topic, "hex") else str(topic)
@@ -131,6 +135,6 @@ def classify_trade(rpc, receipt, wallet: str, min_usdc_flow: float, native_value
             "symbol": str(meta.get("symbol", "?")),
             "token_amount": abs(amount),
             "usdc_amount": abs(observed_usdc),
-            "confirmation_eligible": not native_usdc_spent and swap_connected(receipt, token, wallet),
+            "confirmation_eligible": not native_usdc_spent and swap_connected(receipt, token, wallet, rpc, side),
         })
     return events

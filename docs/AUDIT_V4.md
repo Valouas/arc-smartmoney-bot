@@ -119,6 +119,13 @@ as availability or coverage proof.
 
 ## Residual limitations and assumptions requiring more live validation
 
+**Historical first-pass status:** the list below records what remained after the
+initial audit commit. The subsequent [follow-up corrections](AUDIT_V4_REMEDIATION.md)
+implement cursor persistence, forward scoring, deployment trust checks, stronger
+identity handling, transactional recovery and paper costs/fills. That document is
+the current implementation status; scientific and external-data limits remain
+explicit there.
+
 1. **High: statistical claims remain unproven.** Winner-seeded discovery conditions
    on success. The launch universe is restricted to observed explorer pages and
    discoverable/liquid DexScreener base pairs; deployments during outages/bursts can
@@ -162,7 +169,10 @@ refresh/backoff. No numerical threshold was silently retuned.
 
 - Baseline: 12 passing, 1 failing test (truncated topic fixture) with Python 3.10 /
   Web3 7.16.0.
-- Final deterministic suite: **56 passed**; 8 network cases skipped by default.
+- Initial audit deterministic suite: **56 passed**; follow-up: **103 passed**,
+  including the four-process SQLite test; 8 network cases skipped by default.
+- Follow-up public integration run: **8 passed** in one run, separately from the
+  deterministic suite. Compilation of 49 Python files and `git diff --check` pass.
 - Run offline: `python -m pip install -r requirements-dev.txt`, then
   `python -m pytest -m "not network" -q`.
 - Run public integration separately: set `ARC_RUN_NETWORK=1`, then
@@ -172,3 +182,5 @@ refresh/backoff. No numerical threshold was silently retuned.
   to quarantine. Reconstruction must succeed before they can confirm again.
   Back up the SQLite database before applying to a running research installation;
   stop all four processes for deployment. New-schema concurrent startup is tested.
+  Follow-up schema version 2 also resets old promotions for forward evidence;
+  consult the [migration and trust requirements](AUDIT_V4_REMEDIATION.md).

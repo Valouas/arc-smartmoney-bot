@@ -64,6 +64,18 @@ class Settings:
     promotion_max_wallets: int = _i("PROMOTION_MAX_WALLETS", 100)
     watchlist_reload_seconds: int = _i("WATCHLIST_RELOAD_SECONDS", 30)
 
+    # Operational/data-quality parameters; existing scoring thresholds are unchanged.
+    launch_discovery_pages: int = _i("LAUNCH_DISCOVERY_PAGES", 10)
+    outcome_horizon_seconds: int = _i("OUTCOME_HORIZON_SECONDS", 86400)
+    outcome_grace_seconds: int = _i("OUTCOME_GRACE_SECONDS", 300)
+    identity_cache_seconds: int = _i("IDENTITY_CACHE_SECONDS", 3600)
+    identity_workers: int = _i("IDENTITY_WORKERS", 4)
+    trusted_dex_registry: str = os.getenv("TRUSTED_DEX_REGISTRY", "trusted_dex.json")
+    paper_fee_bps: float = _f("PAPER_FEE_BPS", 30)
+    paper_slippage_bps: float = _f("PAPER_SLIPPAGE_BPS", 50)
+    paper_volume_fraction: float = _f("PAPER_VOLUME_FRACTION", 0.01)
+    paper_liquidity_fraction: float = _f("PAPER_LIQUIDITY_FRACTION", 0.001)
+
     paper_notional_usd: float = _f("PAPER_NOTIONAL_USD", 100)
     paper_stop_loss_pct: float = _f("PAPER_STOP_LOSS_PCT", 25)
     paper_take_profit_pct: float = _f("PAPER_TAKE_PROFIT_PCT", 150)
@@ -71,5 +83,11 @@ class Settings:
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
+
+    def __post_init__(self):
+        if (self.launch_discovery_pages < 1 or self.outcome_horizon_seconds < 1
+                or self.outcome_grace_seconds < 1 or self.identity_cache_seconds < 0
+                or not 1 <= self.identity_workers <= 8):
+            raise ValueError("Invalid observation or identity settings")
 
 SETTINGS = Settings()
