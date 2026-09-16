@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from wallet_policy import is_dex_infrastructure
+from notification_policy import ACTIONABLE_ALERT_KINDS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS seen_txs (
@@ -162,6 +163,12 @@ class Storage:
             self.db.execute("CREATE TABLE IF NOT EXISTS snapshot_attempts (token TEXT, horizon INTEGER, checked_at INTEGER NOT NULL, PRIMARY KEY(token,horizon))")
             for statement in FOLLOWUP_SCHEMA.split(";"):
                 if statement.strip(): self.db.execute(statement)
+            alert_columns = {r[1] for r in self.db.execute('PRAGMA table_info(alert_outbox)')}
+            if 'kind' not in alert_columns:
+                self.db.execute("ALTER TABLE alert_outbox ADD COLUMN kind TEXT NOT NULL DEFAULT 'INTERNAL'")
+            # Old untyped alerts are retained for audit, but must not flood the
+            # chat after upgrading. Never replay SENT/UNKNOWN/SENDING messages.
+            self.db.execute("UPDATE alert_outbox SET state='SUPPRESSED',last_error='notification_policy' WHERE state='PENDING' AND kind NOT IN (?,?)", ACTIONABLE_ALERT_KINDS)
             if version<2:
                 self.db.execute("UPDATE discovery_candidates SET status='QUARANTINE',promotion_reason='requires_forward_validation' WHERE status='PROMOTED'")
                 self.db.execute("UPDATE promoted_wallets SET enabled=0")
@@ -214,9 +221,15 @@ class Storage:
         self.db.execute("INSERT OR IGNORE INTO wallet_coverage VALUES(?,?,?)", (wallet.lower(),block,timestamp))
         self.commit()
 
-    def enqueue(self, key, text):
-        self.db.execute("INSERT OR IGNORE INTO alert_outbox(id,text,state,created_at,next_attempt) VALUES(?,?,'PENDING',?,0)",
-                        (key,text,int(time.time())))
+    def enqueue(self, key, text, *, kind='INTERNAL'):
+        actionable = kind in ACTIONABLE_ALERT_KINDS
+        self.db.execute("INSERT OR IGNORE INTO alert_outbox(id,text,state,created_at,next_attempt,kind,last_error) VALUES(?,?,?,?,0,?,?)",
+                        (key,text,'PENDING' if actionable else 'SUPPRESSED',int(time.time()),kind,
+                         None if actionable else 'notification_policy'))
+        self.commit()
+
+    def suppress_nonactionable_alerts(self):
+        self.db.execute("UPDATE alert_outbox SET state='SUPPRESSED',last_error='notification_policy' WHERE state='PENDING' AND kind NOT IN (?,?)", ACTIONABLE_ALERT_KINDS)
         self.commit()
 
     def save_proposal(self, payload):

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, time, logging, hashlib
+import json, time, logging
 from web3 import Web3
 
 from config import SETTINGS
@@ -15,7 +15,7 @@ from storage import Storage
 from paper_trader import PaperTrader
 from telegram_alerts import TelegramAlerts
 from proposal_queue import ProposalQueue
-from formatting import signal_text
+from formatting import buy_opportunity_text
 from identity_graph import IdentityRefresher
 from intelligence_book import IntelligenceBook
 from watchlist_manager import WatchlistManager
@@ -179,7 +179,6 @@ class ArcSmartMoneyBot:
         else:
             cluster.score = min(100, cluster.cluster_weight * 15 + cluster.independent_identities * 10)
             cluster.status = "EXIT_CLUSTER" if cluster.independent_identities >= 2 else "EXIT_EARLY"
-        key = hashlib.sha256(f"{event.tx_hash.lower()}:{event.wallet.lower()}:{event.token.lower()}:{event.side}".encode()).hexdigest()
         with self.db.transaction():
             if self.db.event_processed(event): return
             self.db.add_event(event)
@@ -188,15 +187,13 @@ class ArcSmartMoneyBot:
                 self.db.add_trade_context(event,cluster.risk.market)
             signal_id=self.db.add_signal(cluster)
             if cluster.status=="VALIDATED": self.db.register_signal_outcome(signal_id,event.token,self.cfg)
-            self.db.enqueue(key,signal_text(cluster))
             if event.side == "BUY":
-                paper = self.paper.maybe_open(cluster)
-                if paper:
-                    self.db.enqueue(key+":paper",f"PAPER BUY {paper['symbol']} | ${paper['notional']:.2f} @ {paper['price']:.10g}")
+                self.paper.maybe_open(cluster)
                 if cluster.status == "VALIDATED":
                     proposal, created = self.proposals.add(cluster)
                     if created:
-                        self.db.enqueue("proposal:"+proposal['id'],f"HUMAN REVIEW #{proposal['id']}\n{proposal['symbol']} {proposal['token']}\nNo real-money order was sent.")
+                        self.db.enqueue('buy:'+proposal['id'],buy_opportunity_text(cluster,proposal),
+                                        kind='BUY_OPPORTUNITY')
             elif event.confirmation_eligible:
                 self.paper.maybe_exit_on_cluster(cluster)
             self.db.mark_event_processed(event)

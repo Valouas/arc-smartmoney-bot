@@ -16,6 +16,7 @@ class AlertOutbox:
         self.storage.commit()
 
     def flush(self, limit=10):
+        self.storage.suppress_nonactionable_alerts()
         if not self.transport.enabled: return 0
         db = self.storage.db
         sent = 0

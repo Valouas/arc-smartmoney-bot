@@ -202,3 +202,7 @@ Use `python rpc_check.py` for a small read-only check of your configured RPC.
 Reviewed DEX emitters remain swap evidence but cannot become smart-money wallets.
 For existing candidates/profiles, follow the [targeted infrastructure cleanup](docs/DEX_INFRASTRUCTURE.md)
 after stopping all four processes; it preserves historical trades and other wallets.
+
+Telegram now sends only one notification per new validated buy opportunity and
+one per newly promoted wallet. Research, blocked signals and paper updates stay
+local. See [notification policy and upgrade behavior](docs/TELEGRAM_NOTIFICATIONS.md).

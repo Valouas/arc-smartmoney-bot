@@ -14,6 +14,7 @@ from identity_graph import IdentityGraph
 from atomic_json import write_json
 from forward_metrics import build_forward_profile
 from wallet_policy import is_dex_infrastructure, require_smart_money_wallet
+from formatting import promoted_wallet_text
 
 logging.basicConfig(level=getattr(logging, SETTINGS.log_level, logging.INFO), format="%(asctime)s %(levelname)s %(message)s")
 log=logging.getLogger("auto-discovery")
@@ -234,7 +235,10 @@ class AutoDiscovery:
             if reasons:
                 self.db.db.execute("UPDATE discovery_candidates SET promotion_reason=? WHERE wallet=?", (",".join(reasons),row["wallet"])); self.db.db.commit(); continue
             weight=max(1,min(4,int(p["recommended_weight"]))); label=f"auto {p['profile_class']} {p['smart_score']}"
-            if not self.db.save_promoted_wallet(row["wallet"],p["smart_score"],p["profile_class"],weight,label): continue
+            with self.db.transaction():
+                if not self.db.save_promoted_wallet(row["wallet"],p["smart_score"],p["profile_class"],weight,label): continue
+                self.db.enqueue('wallet:'+row['wallet'].lower(),promoted_wallet_text(row['wallet'],p),
+                                kind='WALLET_PROMOTED')
             promoted+=1
             log.info("PROMOTED %s score=%s class=%s",row["wallet"],p["smart_score"],p["profile_class"])
         self.write_generated_watchlist(); return promoted

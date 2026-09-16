@@ -54,12 +54,12 @@ def test_nested_transaction_never_commits_early(db):
 
 
 def test_outbox_success_dedup_and_recovery(db):
-    db.enqueue('same','text'); db.enqueue('same','text')
+    db.enqueue('same','text',kind='BUY_OPPORTUNITY'); db.enqueue('same','text',kind='BUY_OPPORTUNITY')
     transport=SimpleNamespace(enabled=True,send=Mock(return_value={'state':'SENT','message_id':'1'}))
     out=AlertOutbox(db,transport)
     assert out.flush()==1 and out.flush()==0
     assert transport.send.call_count==1
-    db.enqueue('crashed','text'); db.db.execute("UPDATE alert_outbox SET state='SENDING' WHERE id='crashed'"); db.commit()
+    db.enqueue('crashed','text',kind='BUY_OPPORTUNITY'); db.db.execute("UPDATE alert_outbox SET state='SENDING' WHERE id='crashed'"); db.commit()
     out.recover(); out.flush()
     assert transport.send.call_count==1
     assert db.db.execute("SELECT state FROM alert_outbox WHERE id='crashed'").fetchone()[0]=='UNKNOWN'
@@ -67,13 +67,13 @@ def test_outbox_success_dedup_and_recovery(db):
 
 def test_outbox_retries_only_known_rejection(db,monkeypatch):
     monkeypatch.setattr('alert_outbox.time.time',lambda:100)
-    db.enqueue('a','text')
+    db.enqueue('a','text',kind='WALLET_PROMOTED')
     send=Mock(side_effect=[{'state':'PENDING','retry_after':60,'error':'rate_limited'},{'state':'SENT'}])
     out=AlertOutbox(db,SimpleNamespace(enabled=True,send=send))
     out.flush(); out.flush(); assert send.call_count==1
     monkeypatch.setattr('alert_outbox.time.time',lambda:160)
     out.flush(); assert send.call_count==2
-    db.enqueue('b','text'); send.side_effect=RuntimeError('sensitive_url')
+    db.enqueue('b','text',kind='WALLET_PROMOTED'); send.side_effect=RuntimeError('sensitive_url')
     out.flush()
     row=db.db.execute("SELECT state,last_error FROM alert_outbox WHERE id='b'").fetchone()
     assert tuple(row)==('UNKNOWN','transport_unknown')
