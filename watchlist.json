@@ -1,0 +1,12 @@
+{
+  "wallets": [
+    {"address":"0xc9de0d2d74dde2437856020e949d6a1f63864b26","label":"c9de historical Arc / early LONG","weight":3,"group":"historical"},
+    {"address":"0x651Ce1ad01ED364f72eA3B78b5A6340dF026e77C","label":"651c multi-token Arc trader","weight":3,"group":"historical"},
+    {"address":"0xf950f0da8659c62fb8e0b5462f05f9cacdf56938","label":"f950 early ARGUS","weight":2,"group":"early"},
+    {"address":"0xe7382f4bed7d2b272f9dab8d847e971281660bf2","label":"e738 early LONG","weight":2,"group":"early"},
+    {"address":"0x2d43783faf4dc28649dc41b7da7fd6af6ee57c34","label":"2d43 early LONG / fresh Arc wallet","weight":1,"group":"insider_watch"},
+    {"address":"0x6e3e48498d1c239f834fa6672eb2b79cb949633c","label":"6e3e early LONG / fresh Arc wallet","weight":1,"group":"insider_watch"},
+    {"address":"0x750ba4da2a0ed04af1fe5988c0b2406297a4a58b","label":"750b early LONG / fresh Arc wallet","weight":1,"group":"insider_watch"},
+    {"address":"0xbF51F82a7B175d5351DAD400f243577C9d6E9025","label":"bf51 Arc flow wallet","weight":1,"group":"flow"}
+  ]
+}
