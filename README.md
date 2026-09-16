@@ -144,6 +144,19 @@ Shows:
 - reason a candidate has not been promoted;
 - promoted wallets.
 
+## Wallet ranking
+
+Compare all discovered and profiled wallets without changing promotion rules:
+
+```powershell
+python wallet_ranking.py --top 20
+```
+
+The console shows the top 20; `data/wallet_ranking.csv` and the summary include
+everyone. This read-only report distinguishes forward evidence from research
+history and grants no signal authority. See [wallet ranking](docs/WALLET_RANKING.md)
+for the reporting categories, fields and limitations.
+
 ## Forward backtest
 
 Continue using:
