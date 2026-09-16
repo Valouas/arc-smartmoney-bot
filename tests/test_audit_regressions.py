@@ -145,7 +145,7 @@ def test_arcscan_errors_and_parameter():
     c.explore_token_transfers(standard='ERC-20')
     assert c._json.call_args.kwargs['params']['standard']=='erc20'
     c=ArcscanClient('https://unused')
-    response=Mock(); response.json.return_value={'error':{'code':'BUSY'}}; c.s.get=Mock(return_value=response)
+    response=Mock(status_code=200); response.json.return_value={'error':{'code':'BUSY'}}; c.s.get=Mock(return_value=response)
     with pytest.raises(ArcscanError): c.address_activity(W)
     response.json.return_value={'truncated':True,'items':[]}
     with pytest.raises(ArcscanError): c.token_transfers(T)

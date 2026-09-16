@@ -17,6 +17,7 @@ class LaunchIndexer:
         self.market = DexScreenerClient(self.cfg.dexscreener_chain_id)
 
     def _discover_stream(self, stream):
+        self._discovery_page = 0
         state = self.db.db.execute("SELECT * FROM discovery_cursors WHERE stream=?", (stream,)).fetchone()
         cursor = state["cursor"] if state else None
         stop = state["stop_key"] if state else None
@@ -24,12 +25,13 @@ class LaunchIndexer:
         seen = set(json.loads(state["seen_cursors"])) if state and cursor else set()
         if not cursor: head = None
         count = 0
-        for _ in range(self.cfg.launch_discovery_pages):
+        for page_index in range(1, self.cfg.launch_discovery_pages + 1):
+            self._discovery_page = page_index
             if stream == "contracts":
-                data = self.arcscan.explore_contracts(limit=self.cfg.launch_contract_page_size,cursor=cursor,filter_name="token")
+                data = self.arcscan.explore_contracts(limit=self.cfg.launch_contract_page_size,cursor=cursor,filter_name="token",page_index=page_index)
                 parsed, keys = parse_deployment_page(data)
             else:
-                data = self.arcscan.explore_token_transfers(limit=self.cfg.launch_transfer_page_size,cursor=cursor,standard="erc20")
+                data = self.arcscan.explore_token_transfers(limit=self.cfg.launch_transfer_page_size,cursor=cursor,standard="erc20",page_index=page_index)
                 if not isinstance(data,dict) or not isinstance(data.get("items"),list):
                     raise ArcscanError("unrecognized launch discovery page")
                 parsed = extract_tokens_from_transfers(data)
@@ -79,10 +81,11 @@ class LaunchIndexer:
                 self.db.db.execute("INSERT INTO discovery_cursors(stream,error) VALUES(?,?) ON CONFLICT(stream) DO UPDATE SET error=excluded.error",
                                    (stream,"incomplete_page_or_transport"))
                 self.db.commit()
-                # ArcscanError contains controlled parser messages or a public
-                # endpoint path, never the raw HTTP exception, URL or response.
+                # ArcscanError contains controlled parser/transport messages,
+                # never the raw HTTP exception, URL or response.
                 reason = str(exc) if isinstance(exc, ArcscanError) else type(exc).__name__
-                log.warning("%s discovery incomplete: %s; saved cursor retained",stream,reason)
+                log.warning("%s discovery incomplete: %s; page=%s/%s; saved cursor retained",
+                            stream,reason,self._discovery_page,self.cfg.launch_discovery_pages)
                 counts.append(0)
         completed = self.db.db.execute("SELECT COUNT(*) FROM discovery_cursors WHERE stream='contracts' AND completed_at IS NOT NULL AND error IS NULL").fetchone()[0]
         if completed == 1:

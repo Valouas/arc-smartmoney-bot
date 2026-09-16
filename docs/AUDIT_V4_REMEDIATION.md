@@ -180,3 +180,52 @@ authority. Market lookups were disabled in these discovery regression runs.
 No user's runtime database, `.env` or DEX registry was modified. Existing
 installations can simply update and run `launch_indexer.py --once` again; there
 is no database reset or new migration.
+
+## PR #2 bounded retries for transient Arcscan failures
+
+`ArcscanClient._json()` now makes at most three attempts for a request, including
+the first attempt. Retries apply only to timeout/connection exceptions and HTTP
+429, 500, 502, 503 or 504. Other HTTP errors (including 400 and 408), malformed
+JSON and error/truncated payloads fail immediately. A capped response is still
+rejected by discovery/history validation; it is not reclassified as complete by
+the transport layer. Exhaustion raises `ArcscanError`, never a synthetic empty
+response.
+
+The two local backoffs are 0.5 seconds and 1 second, each with uniform jitter of
+0–0.25 seconds. A valid `Retry-After`, in seconds or HTTP-date form, is a minimum
+delay: it can lengthen the wait beyond the local backoff. Invalid/expired values
+retain the local backoff. Responses are closed before waiting. The per-attempt
+request timeout remains 10 seconds. There is no new configuration or migration.
+
+Only controlled failure categories, attempt counters, discovery page numbers and
+the computed delay are logged. URLs, cursors, raw exceptions, response bodies and
+raw header values are omitted. Discovery page indices start at 1 for each stream
+in each cycle. For example, failure of the second page after all retries gives:
+
+```text
+Arcscan request failed category=502 page=2 attempt=3/3
+contracts discovery incomplete: Arcscan request failed: category=502 attempts=3; page=2/10; saved cursor retained
+```
+
+Retries use the identical request parameters. Cursor updates remain inside the
+existing transaction after full row, ranking and pagination validation. Successful
+earlier pages remain committed; a failed page leaves its cursor available for the
+next cycle. A successful HTTP retry followed by an invalid schema or capped page
+also leaves the cursor unchanged. Neither transport retries nor successful
+transfer pages grant contracts coverage or promotion authority.
+
+Final validation: **190 deterministic tests passed; 11 public network cases
+passed**. Tests cover every permitted retry category, Retry-After seconds/dates,
+bounded jitter/backoff, non-retryable errors, secret-free logs and page-2 failure
+after a committed page-1. Public checks run the actual `--once` entry point in
+temporary databases from the current head and both saved cursors. At the latest
+84-character cursor, the three-page run reported
+`contracts=243 transfer_tokens=7`, with both stream errors cleared. An earlier
+public run also recovered from a real timeout via the new retry path.
+
+The first deterministic run exposed an intermittent SQLite startup lock at
+`PRAGMA journal_mode=WAL` in the existing four-process test. The final complete
+run, including that test, passed. SQLite startup was not changed by this focused
+HTTP fix; the observed contention is recorded here rather than claimed fixed.
+All runtime DB reads were read-only and all test writes used temporary databases.
+The user's `.env` and DEX registry were not modified.

@@ -103,7 +103,8 @@ def test_warning_has_specific_schema_reason_without_reflecting_payload(db, page,
     assert 'private-token' not in caplog.text
 
 
-def test_warning_reports_sanitized_transport_reason(db, caplog):
+def test_warning_reports_sanitized_transport_reason(db, caplog, monkeypatch):
+    monkeypatch.setattr('arcscan.time.sleep', lambda _: None)
     x = indexer(db, None)
     x.arcscan = ArcscanClient('https://user:private-token@example.invalid')
     x.arcscan.s.get = Mock(side_effect=requests.Timeout('private-token in raw request URL'))
@@ -111,7 +112,7 @@ def test_warning_reports_sanitized_transport_reason(db, caplog):
         x.discover()
     finally:
         x.arcscan.s.close()
-    assert 'Arcscan request failed: /explore/contracts' in caplog.text
+    assert 'Arcscan request failed: category=timeout attempts=3' in caplog.text
     assert 'private-token' not in caplog.text and 'example.invalid' not in caplog.text
 
 

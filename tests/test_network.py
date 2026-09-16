@@ -61,10 +61,12 @@ def test_live_endpoint_contracts(api,kind):
         assert pct is not None and 0<=pct<=100 and holders>0
 
 
-@pytest.mark.parametrize('saved_contract_cursor', [None,
-    'eyJhIjoiMHgyZmNmZmYyMjAwNzVhMDI0MzljMDQyNmI1Y2FkOWE2NjQ3ZTcwNmM1IiwiYiI6MjExNzMxMzZ9',
-], ids=['fresh', 'saved-unclassified-page'])
-def test_live_launch_indexer_once(tmp_path, monkeypatch, saved_contract_cursor):
+@pytest.mark.parametrize('saved_contract_cursor,page_budget,page_size', [
+    (None, 2, 3),
+    ('eyJhIjoiMHgyZmNmZmYyMjAwNzVhMDI0MzljMDQyNmI1Y2FkOWE2NjQ3ZTcwNmM1IiwiYiI6MjExNzMxMzZ9', 1, 100),
+    ('eyJhIjoiMHg2OWZkYmI5YWE5OTNiZDM0YTRhYjFiMTM5OTRhMGIzMmUwMmFmMjk0IiwiYiI6MjExMzU1NTV9', 3, 100),
+], ids=['fresh', 'saved-unclassified-page', 'saved-multi-page-retry'])
+def test_live_launch_indexer_once(tmp_path, monkeypatch, saved_contract_cursor, page_budget, page_size):
     """Exercise the real --once entry point without touching the user's DB/env."""
     import config
     from storage import Storage
@@ -80,8 +82,8 @@ def test_live_launch_indexer_once(tmp_path, monkeypatch, saved_contract_cursor):
     monkeypatch.setattr(config, 'SETTINGS', replace(
         config.SETTINGS,
         arcscan_api_url='https://api.arc-scan.org/v1',
-        launch_discovery_pages=1 if saved_contract_cursor else 2,
-        launch_contract_page_size=100 if saved_contract_cursor else 3,
+        launch_discovery_pages=page_budget,
+        launch_contract_page_size=page_size,
         launch_transfer_page_size=3,
         # This regression exercises both discovery streams, not market quotes.
         launch_max_market_checks_per_cycle=0,
