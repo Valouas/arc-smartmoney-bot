@@ -32,8 +32,10 @@ Les catégories suivantes sont exclusivement descriptives :
   de fraîcheur, d'indépendance ou de financement peuvent donc subsister.
 - **WATCH** : les autres wallets.
 
-L'ordre est VALIDATED, PROMISING, WATCH, REJECTED, puis les nombres de winners
-forward, trades évaluables, achats observés et le score forward décroissants.
+L'ordre est VALIDATED, PROMISING, WATCH, REJECTED, puis le rendement pondéré
+positif observé, les nombres de winners forward, trades évaluables, achats
+observés et le score forward décroissants. Un rendement pondéré négatif ou
+inconnu ne donne aucun bonus ; il ne change aucune classe ni aucun statut.
 La complétude, les sources indépendantes et les winner sources départagent
 ensuite les égalités, puis l'adresse. Les sources sont un critère d'avancement
 de recherche, pas une preuve de rentabilité. Un score rétrospectif ne sert pas au tri.
@@ -91,6 +93,37 @@ ne suffisent pas à établir une rentabilité nette réalisée.
 Chemins alternatifs disponibles : `--db`, `--csv`, `--watchlist`, `--history`.
 Le scanner peut modifier les fichiers JSON pendant la lecture : ils sont des
 instantanés distincts de celui de SQLite, et leur présence ne donne aucune autorité.
+
+## Allocation du capital, conviction et diversité
+
+Voir [les formules, les limites et les alertes de sizing](CAPITAL_ALLOCATION.md).
+Le rapport ajoute les performances pondérées, les tailles médianes, la
+concentration des gains et les relations d'identité sans exclure les petits
+échantillons. Les métriques négatives ne suppriment aucun wallet.
+
+```powershell
+# Tous les wallets + CSV wallets et clusters complets
+python wallet_ranking.py
+# Top 20 individuel
+python wallet_ranking.py --top 20
+# Top 20 avec au maximum 2 wallets par cluster connu
+python wallet_ranking.py --top 20 --diverse
+# Variante plus stricte pour l'affichage uniquement
+python wallet_ranking.py --top 20 --diverse --per-cluster 1
+# Résumé par cluster
+python wallet_ranking.py --clusters
+```
+
+Les deux CSV `data/wallet_ranking.csv` et `data/cluster_ranking.csv` sont toujours
+complets. `--top` limite la console seulement. Un Top 20 diversifié peut contenir
+moins de 20 lignes si trop peu de clusters sont connus ; on ne dépasse pas le
+plafond pour remplir artificiellement la vue. Le CSV wallet garde aussi
+`same_cluster_wallet_count_in_top` correspondant à la vue sélectionnée.
+
+Le résumé affiche le nombre de groupes d'identité, leur taille, les singletons,
+les groupes de plusieurs wallets, les identités inconnues et les clusters actifs.
+Les groupes `unknown:` restent des cases de reporting, pas des preuves
+d'indépendance.
 
 Tests :
 

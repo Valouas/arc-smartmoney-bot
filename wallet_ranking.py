@@ -15,6 +15,8 @@ from pathlib import Path
 
 from config import SETTINGS
 from wallet_policy import InfrastructureRegistryError, infrastructure_addresses
+from capital_allocation import allocation_metrics, forward_buys, sizing_policy
+from ranking_clusters import attach_clusters, cluster_ranking, cluster_summary, select_view
 
 
 def number(value):
@@ -136,6 +138,7 @@ def rank_wallet(wallet, candidate, stored, promoted, research, observed, epoch,
         "internal_promotion_enabled": internally_promoted,
         "in_generated_watchlist": wallet in generated if generated is not None else None,
         "last_runtime_identity_cluster": identity.get("identity_id"),
+        "runtime_identity_known": identity.get("identity_known", False),
         "last_runtime_identity_at": utc(identity.get("timestamp")),
         "historical_identity_cluster": history.get("identity_cluster"),
         "historical_funder": history.get("funded_by"),
@@ -146,8 +149,9 @@ def rank_wallet(wallet, candidate, stored, promoted, research, observed, epoch,
 
 
 def build_ranking(db_path="data/arc_bot.sqlite3", *, cfg=SETTINGS, now=None,
-                  watchlist_path="generated_watchlist.json", history_path="data/history_report.json"):
+                  watchlist_path="generated_watchlist.json", history_path="data/history_report.json", policy=None):
     now = int(time.time()) if now is None else now
+    policy = policy or sizing_policy()
     excluded = infrastructure_addresses(cfg)
     watchlist = optional_json(watchlist_path)
     generated = {r["address"].lower() for r in watchlist["wallets"]} if watchlist is not None else None
@@ -181,8 +185,20 @@ def build_ranking(db_path="data/arc_bot.sqlite3", *, cfg=SETTINGS, now=None,
                             research.get(w, 0), observed.get(w, 0), epoch, generated,
                             history.get(w, {}), identities.get(w, {}), w in excluded, cfg, now)
                 for w in candidates.keys() | profiles.keys()]
+        buys = forward_buys(db, now)
+        sources = {}
+        for r in db.execute('SELECT lower(wallet),lower(token) FROM candidate_sources'):
+            sources.setdefault(r[0], set()).add(r[1])
+        for row in rows:
+            row.update(allocation_metrics([] if row['infrastructure_excluded'] else buys.get(row['wallet'], []), policy, cfg.winner_return_pct))
+            row['winner_source_tokens'] = sorted(sources.get(row['wallet'], set()))
+            row['reason_not_promoted'] = row['promotion_blockers']
+    attach_clusters(rows)
     priority = {"VALIDATED": 0, "PROMISING": 1, "WATCH": 2, "REJECTED": 3}
     return sorted(rows, key=lambda r: (priority[r["report_class"]],
+        # Positive allocation evidence can raise display rank, never demote a
+        # wallet's internal status or give it confirmation power.
+        -max(0, r['capital_weighted_return'] or 0),
         -(r["forward_winners"] or 0), -(r["forward_evaluable_trades"] or 0),
         -(r["forward_buys_observed"] or 0),
         -(r["score"] or 0) if r["forward_launches_bought"] is not None else 0,
@@ -196,7 +212,8 @@ def summarize(rows):
             **{c.lower(): classes[c] for c in ("REJECTED", "WATCH", "PROMISING", "VALIDATED")},
             "forward_buys_ge_1": sum((r["forward_buys_observed"] or 0) >= 1 for r in rows),
             "forward_buys_ge_3": sum((r["forward_buys_observed"] or 0) >= 3 for r in rows),
-            "complete": sum(r["data_status"] == "COMPLETE" for r in rows)}
+            "complete": sum(r["data_status"] == "COMPLETE" for r in rows),
+            **cluster_summary(rows)}
 
 
 def display(value):
@@ -207,7 +224,17 @@ def display(value):
     return f"{value:.1f}" if isinstance(value, float) else str(value)
 
 
-def write_report(rows, csv_path, top=None):
+def display_field(key, value):
+    if value is not None and key in {'capital_weighted_hit_rate', 'capital_weighted_return',
+            'outcome_capital_coverage', 'largest_trade_contribution', 'conviction_accuracy',
+            'internal_capital_concentration', 'best_wallet_return'}:
+        return f'{value:.2%}'
+    if value is not None and key == 'profit_factor':
+        return f'{value:.2f}'
+    return display(value)
+
+
+def export_csv(rows, csv_path):
     path = Path(csv_path)
     if path.suffix.lower() != ".csv":
         raise ValueError("Report output must be a CSV file")
@@ -216,11 +243,19 @@ def write_report(rows, csv_path, top=None):
     with path.open("w", encoding="utf-8-sig", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows({k: json.dumps(v, ensure_ascii=True, allow_nan=False) if isinstance(v, (list, dict)) else v
+                         for k, v in row.items()} for row in rows)
+
+
+def write_report(rows, csv_path, top=None, diverse=False, per_cluster=2):
+    full, selected = select_view(rows, top, diverse, per_cluster)
+    export_csv(full, csv_path)
     print("Classement descriptif uniquement. Aucune autorite de signal accordee.")
     print("Hit = winners/evaluables forward; N/A = inconnu, pas zero. Dates UTC.")
+    print('Capital: rendements bruts a horizon fixe; pas des profits realises. Couverture des outcomes indiquee.')
     print(f"{'#':>3} {'Categorie':<10} {'Wallet':<42} {'Discovery':<12} {'Score':>5} {'Classe moteur':<13} {'Buys':>5} {'Hit%':>6} {'Capt%':>6} Donnees")
-    for i, r in enumerate(rows[:top], 1):
+    print(f"Vue: {'diversifiee' if diverse else 'brute'} | {len(selected)} wallets affiches")
+    for i, r in enumerate(selected, 1):
         print(f"{i:3} {r['report_class']:<10} {r['wallet']:<42} {r['discovery_status']:<12} "
               f"{display(r['score']):>5} {display(r['current_class']):<13} "
               f"{display(r['forward_buys_observed']):>5} {display(r['forward_hit_rate_pct']):>6} "
@@ -228,17 +263,35 @@ def write_report(rows, csv_path, top=None):
         for label, keys in (
             ("Sources", ("first_discovered_at", "winner_sources", "independent_sources", "research_trades")),
             ("Forward", ("forward_launches_bought", "forward_evaluable_trades", "forward_winners", "profile_generated_at")),
+            ("Capital", ("capital_weighted_hit_rate", "capital_weighted_return", "profit_factor", "outcome_capital_coverage")),
+            ("Sizing", ("median_buy_usdc", "largest_buy_usdc", "largest_trade_contribution", "conviction_accuracy", "sizing_confidence", "allocation_evidence_confidence", "concentration_risk")),
             ("Etat", ("in_generated_watchlist", "infrastructure_excluded", "last_engine_promotion_reason")),
             ("Relations", ("last_runtime_identity_cluster", "last_runtime_identity_at", "historical_identity_cluster", "historical_funder", "historical_identity_at", "relation_funder_flags")),
+            ("Cluster", ("identity_cluster_id", "identity_cluster_size", "related_wallets_count", "independent_cluster_count", "same_cluster_wallet_count_in_top")),
         ):
-            print(textwrap.fill(label+": "+" | ".join(k+"="+display(r[k]) for k in keys),
+            print(textwrap.fill(label+": "+" | ".join(k+"="+display_field(k,r[k]) for k in keys),
                                 width=140, initial_indent="    ", subsequent_indent="      ",
                                 break_long_words=False, break_on_hyphens=False))
         blockers = r['promotion_blockers'].split(';') if r['promotion_blockers'] else []
         print("    Blocages principaux: "+("; ".join(blockers[:3]) or "aucun critere stocke bloquant")+
               (f" (+{len(blockers)-3} dans le CSV)" if len(blockers) > 3 else ""))
     print("Resume (tous les wallets): "+" | ".join(f"{k}={v}" for k, v in summarize(rows).items()))
-    print(f"CSV complet: {path}")
+    print(f"CSV complet: {csv_path}")
+
+
+def write_cluster_report(rows, path, top=None, policy=None):
+    clusters = cluster_ranking(rows, policy or sizing_policy(), SETTINGS.winner_return_pct)
+    export_csv(clusters, path)
+    print('Clusters descriptifs; identites inconnues != confirmations independantes.')
+    print('Cluster | Wallets | Actifs | Sources distinctes | Buys | Winners | Capital USDC | Return pondere | Confiance')
+    for r in clusters[:top]:
+        print(' | '.join(display_field(k,r[k]) for k in ('cluster_id','wallet_count','observed_wallet_count',
+            'winner_sources_distinct','forward_buys','forward_winners','capital_total_observed',
+            'capital_weighted_return','cluster_confidence')))
+        print('    '+ ' | '.join(k+'='+display_field(k,r[k]) for k in ('best_wallet_return',
+            'internal_capital_concentration','concentration_risk','relation_funder_flags')))
+    print('Resume global: '+ ' | '.join(f'{k}={v}' for k,v in summarize(rows).items()))
+    print(f'CSV clusters complet: {path}')
 
 
 def main(argv=None):
@@ -248,12 +301,26 @@ def main(argv=None):
     parser.add_argument("--csv", default="data/wallet_ranking.csv")
     parser.add_argument("--watchlist", default="generated_watchlist.json")
     parser.add_argument("--history", default="data/history_report.json")
+    parser.add_argument("--diverse", action="store_true", help="Display at most --per-cluster wallets per identity")
+    parser.add_argument("--per-cluster", type=int, default=2)
+    parser.add_argument("--clusters", action="store_true", help="Display cluster ranking instead of wallet rows")
+    parser.add_argument("--cluster-csv", default="data/cluster_ranking.csv")
     args = parser.parse_args(argv)
     if args.top is not None and args.top < 1:
         parser.error("--top must be positive")
+    if args.per_cluster < 1:
+        parser.error('--per-cluster must be positive')
+    if args.diverse and args.clusters:
+        parser.error('--diverse applies to wallet rows, not --clusters')
     try:
         rows = build_ranking(args.db, watchlist_path=args.watchlist, history_path=args.history)
-        write_report(rows, args.csv, args.top)
+        if args.clusters:
+            full, _ = select_view(rows, args.top)
+            export_csv(full, args.csv)
+            write_cluster_report(rows, args.cluster_csv, args.top)
+        else:
+            write_report(rows, args.csv, args.top, args.diverse, args.per_cluster)
+            export_csv(cluster_ranking(rows, sizing_policy(), SETTINGS.winner_return_pct), args.cluster_csv)
     except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, InfrastructureRegistryError):
         parser.exit(1, "Rapport impossible: verifier la base, le registre DEX et les fichiers JSON/CSV. Aucun etat moteur modifie.\n")
     return 0

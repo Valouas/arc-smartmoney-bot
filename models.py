@@ -28,6 +28,10 @@ class TradeEvent:
     intelligence_class: Optional[str] = None
     confirmation_eligible: bool = True
     trade_verified: bool = True
+    # Descriptive metadata only; scoring/eligibility never reads these fields.
+    sizing: dict = field(default_factory=dict)
+    identity_known: Optional[bool] = None
+    identity_cluster_size: Optional[int] = None
 
 @dataclass
 class MarketSnapshot:

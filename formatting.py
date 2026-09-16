@@ -55,6 +55,25 @@ def buy_opportunity_text(signal, proposal):
         lines += [f'Prix de référence : {price}',
                   f'Liquidité : {money(market.liquidity_usd)} | Capitalisation : {money(market.market_cap_usd or market.fdv_usd)}']
         if market.url: lines.append(market.url)
+    eligible = [e for e in signal.events if e.confirmation_eligible and e.trade_verified and e.sizing]
+    # Keep a single concise Telegram notification; full metadata is persisted
+    # in runtime_events/signals for every event, including those not listed here.
+    for e in eligible[-3:]:
+        sizing = e.sizing
+        ratio = sizing.get('size_multiplier')
+        share = sizing.get('capital_share')
+        lines += [
+            f'Wallet autorisé : {e.wallet}',
+            f'Classe moteur : {e.intelligence_class or "?"} | signal VALIDATED',
+            f'Buy: {money(sizing.get("buy_usdc"))} | Usual buy: {money(sizing.get("usual_buy_usdc"))}',
+            f'Size: {ratio:.2f}x' if ratio is not None else 'Size: N/A (baseline insuffisante)',
+            f'Capital share observed: {share:.1%}' if share is not None else 'Capital share observed: N/A',
+            f'Sizing confidence: {sizing.get("sizing_confidence", "LOW")} | Conviction: {sizing.get("conviction_label") or "N/A"}',
+            f'Identity cluster: {e.identity_id or "?"} | Cluster size: {e.identity_cluster_size or "?"}',
+            f'Independent identities on token: {signal.independent_identities}',
+        ]
+    if len(eligible) > 3:
+        lines.append(f'+ {len(eligible)-3} wallets autorisés : détails dans le rapport local.')
     lines += [f"Référence : {proposal['id']}", 'À examiner manuellement — aucun ordre réel envoyé.']
     return '\n'.join(lines)
 

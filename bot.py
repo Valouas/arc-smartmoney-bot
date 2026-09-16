@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, time, logging
+import json, time, logging, sqlite3
 from web3 import Web3
 
 from config import SETTINGS
@@ -22,6 +22,7 @@ from watchlist_manager import WatchlistManager
 from alert_outbox import AlertOutbox
 from process_lock import ProcessLock
 from wallet_policy import is_dex_infrastructure
+from capital_allocation import event_sizing, sizing_policy
 
 logging.basicConfig(level=getattr(logging, SETTINGS.log_level, logging.INFO), format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("arc-bot")
@@ -145,6 +146,7 @@ class ArcSmartMoneyBot:
                         side=d["side"],token=d["token"],token_symbol=d["symbol"],
                         token_amount=d["token_amount"],usdc_amount=d["usdc_amount"],
                         identity_id=self.identities.identity_id(info.address),reputation_score=intel["score"],
+                        identity_known=self.identities.eligible(info.address),
                         intelligence_class=intel["class"],confirmation_eligible=(intel["eligible"] and d["confirmation_eligible"]
                             and self.identities.eligible(info.address) and self.db.wallet_eligible(info.address)))
                     if self.db.event_processed(e): continue
@@ -156,6 +158,17 @@ class ArcSmartMoneyBot:
 
     def handle_event(self, event: TradeEvent):
         if is_dex_infrastructure(event.wallet,self.cfg): return
+        event.sizing = {}
+        if event.side == 'BUY' and event.confirmation_eligible and event.trade_verified:
+            # Observational metadata cannot affect safety gates or interrupt
+            # observation when an optional sizing input is unavailable.
+            try:
+                event.sizing = event_sizing(self.db.db, event, sizing_policy())
+                event.identity_cluster_size = sum(
+                    self.identities.identity_id(w) == event.identity_id for w in self.watch
+                    if self.identities.eligible(w)) if event.identity_id else None
+            except (ValueError, TypeError, sqlite3.Error):
+                log.warning('Optional sizing metadata unavailable')
         # Re-evaluate buffered confirmations after removals, demotions or changes
         # to identity membership. Old events must not retain stale authority.
         for queues in self.clusters.events.values():
@@ -168,7 +181,10 @@ class ArcSmartMoneyBot:
                         intel = self.intelligence.effective(prior.wallet, prior.reputation_score, info.weight)
                         prior.confirmation_eligible &= intel["eligible"]
                         prior.wallet_weight = intel["weight"]
-                        prior.identity_id = self.identities.identity_id(prior.wallet)
+                        current_identity = self.identities.identity_id(prior.wallet)
+                        if current_identity != prior.identity_id:
+                            prior.identity_cluster_size = None
+                        prior.identity_id = current_identity
         cluster = self.clusters.add(event)
         cluster.risk = self.risk.inspect(event.token)
         if event.side == "BUY":
