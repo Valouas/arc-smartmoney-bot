@@ -1,0 +1,8 @@
+{
+  "tokens": [
+    {"symbol":"ARGUS","address":"0xece5ca8bf9220718e5727754026757512212cb3c","weight":3},
+    {"symbol":"LONG","address":"0x2164bb17a2d38c1b5170e987b2c0416df1efc752","weight":3},
+    {"symbol":"TOLLY","address":"0xbc43ce8dec648ea298c4275559b81d6261c90b67","weight":2},
+    {"symbol":"ARCAT","address":"0x07704b06981ea962b87296362a1281484d160000","weight":1}
+  ]
+}
