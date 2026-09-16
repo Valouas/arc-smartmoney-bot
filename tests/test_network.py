@@ -61,17 +61,27 @@ def test_live_endpoint_contracts(api,kind):
         assert pct is not None and 0<=pct<=100 and holders>0
 
 
-def test_live_launch_indexer_once(tmp_path, monkeypatch):
+@pytest.mark.parametrize('saved_contract_cursor', [None,
+    'eyJhIjoiMHgyZmNmZmYyMjAwNzVhMDI0MzljMDQyNmI1Y2FkOWE2NjQ3ZTcwNmM1IiwiYiI6MjExNzMxMzZ9',
+], ids=['fresh', 'saved-unclassified-page'])
+def test_live_launch_indexer_once(tmp_path, monkeypatch, saved_contract_cursor):
     """Exercise the real --once entry point without touching the user's DB/env."""
     import config
+    from storage import Storage
     script = Path(__file__).resolve().parents[1] / 'launch_indexer.py'
     monkeypatch.chdir(tmp_path)
+    if saved_contract_cursor:
+        storage = Storage()
+        storage.db.execute("INSERT INTO discovery_cursors(stream,cursor,error) VALUES('contracts',?,'incomplete_page_or_transport')",
+                           (saved_contract_cursor,))
+        storage.commit()
+        storage.db.close()
     monkeypatch.setattr(sys, 'argv', [str(script), '--once'])
     monkeypatch.setattr(config, 'SETTINGS', replace(
         config.SETTINGS,
         arcscan_api_url='https://api.arc-scan.org/v1',
-        launch_discovery_pages=2,
-        launch_contract_page_size=3,
+        launch_discovery_pages=1 if saved_contract_cursor else 2,
+        launch_contract_page_size=100 if saved_contract_cursor else 3,
         launch_transfer_page_size=3,
         # This regression exercises both discovery streams, not market quotes.
         launch_max_market_checks_per_cycle=0,
@@ -91,6 +101,14 @@ def test_live_launch_indexer_once(tmp_path, monkeypatch):
             assert state['error'] is None, (stream, state)
             assert state['cursor'] or state['completed_at'] is not None
         assert indexer.db.db.execute('SELECT COUNT(*) FROM launch_candidates').fetchone()[0] > 0
+        if saved_contract_cursor:
+            assert states['contracts']['cursor'] != saved_contract_cursor
+            for address in ('0x7ed6c2f2df8971bc5f648d117c6cb931a1cd9aa8',
+                            '0xac167b3d0636914785b56c19f1af83cea9ca66bf'):
+                # The two live unclassified rows must not acquire deployment
+                # authority. A supplemental transfer may still mention them.
+                candidate = indexer.db.db.execute('SELECT deployment_block FROM launch_candidates WHERE token=?', (address,)).fetchone()
+                assert candidate is None or candidate['deployment_block'] is None
     finally:
         indexer.arcscan.s.close()
         indexer.db.db.close()

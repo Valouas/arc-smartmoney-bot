@@ -22,3 +22,29 @@ fetches them implicitly.
 
 No captured response is interpreted as an instruction. Synthetic variants in the
 tests exercise caps, missing fields, errors, cycles, malformed units and failures.
+
+## Saved contracts cursor / unclassified rows
+
+`arcscan_contracts_unclassified.json` was captured on 2026-09-16, before changing
+the parser, from `/explore/contracts?limit=100&filter=token&cursor=...`, using the
+user's saved contracts cursor (the database was opened read-only):
+
+```text
+eyJhIjoiMHgyZmNmZmYyMjAwNzVhMDI0MzljMDQyNmI1Y2FkOWE2NjQ3ZTcwNmM1IiwiYiI6MjExNzMxMzZ9
+```
+
+The 100-row response had `ranking.complete=true` and two offending rows, at
+zero-based indices 0 and 48. Their exact JSON value was `token.standard="unknown"`;
+there was no top-level `standard` field. Addresses:
+
+- `0x7ed6c2f2df8971bc5f648d117c6cb931a1cd9aa8` (creation block 21173099).
+- `0xac167b3d0636914785b56c19f1af83cea9ca66bf`.
+
+The pre-fix indexer reproduced `ArcscanError: unknown deployment standard` on
+this response in an isolated database. The minimal fixture retains the first
+unclassified row and the first ERC-20 row, in source order, with the original
+pagination and ranking values; it is a reduced regression example, not a full
+100-row discovery history. Display-only address labels and unused fields are
+omitted. The `unknown` string is the observed API encoding of the unclassified
+category described in [Arcscan's token documentation](https://docs.arc-scan.org/docs/tokens).
+Absent/null standards and arbitrary new strings are not aliases for that category.

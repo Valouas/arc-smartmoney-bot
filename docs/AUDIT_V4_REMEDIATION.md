@@ -140,3 +140,43 @@ To apply to an existing installation, stop the running processes, update
 show `error: None` after an accepted page. A nonempty cursor is normal when more
 pages remain. A genuine later outage or malformed response still produces an
 error; this fix does not mask it.
+
+## PR #2 saved-cursor deployment-standard regression
+
+The subsequent live error was reproduced **before** changing parser behavior,
+using the contracts cursor read from the user's database in read-only mode. The
+public response contained 100 rows, `ranking.complete=true`, and two rows with
+the exact value `token.standard="unknown"` (no top-level `standard` field).
+The first was `0x7ed6c2f2df8971bc5f648d117c6cb931a1cd9aa8`, at block 21173099;
+the other was `0xac167b3d0636914785b56c19f1af83cea9ca66bf`. The pre-fix parser
+raised `ArcscanError: unknown deployment standard` on that response.
+
+Arcscan's [token documentation](https://docs.arc-scan.org/docs/tokens) describes
+an unclassified category. `unknown` is its observed JSON encoding on this page;
+it is not an absent standard. A reduced two-row fixture and the original request
+cursor are documented in [the fixture notes](../tests/fixtures/README.md).
+
+The contracts parser now validates each row's address, token object and explicit
+standard declarations. Only an exact ERC-20 declaration becomes a deployment
+candidate. ERC-721, ERC-1155 and the observed `unknown` value are skipped as
+candidates, while all valid row addresses remain pagination keys, including the
+head and previous-head stop boundary. Missing/null standards, conflicting
+declarations or addresses, malformed metadata and unrecognized new enum values
+still fail closed. Token names/symbols and recursively nested objects cannot
+turn an unclassified row into an ERC-20 candidate.
+
+Contracts still require `ranking.complete=true`; caps/truncation, malformed
+pages, inconsistent pagination and cyclic cursors are rejected. Transfers have
+no new authority. Discovery warnings now include the controlled ArcscanError
+reason. Raw HTTP exception text, configured URLs/credentials and untrusted row
+values are not logged; unexpected parsing exceptions log only their type.
+
+Validation: **158 deterministic tests and 10 public network cases passed**.
+The live `--once` entry point passed both from the current head and from the
+previously failing saved cursor in isolated temporary databases. The saved-cursor
+cycle reported `contracts=48 transfer_tokens=1`, advanced the contracts cursor,
+cleared its seeded error, and assigned neither unclassified address deployment
+authority. Market lookups were disabled in these discovery regression runs.
+No user's runtime database, `.env` or DEX registry was modified. Existing
+installations can simply update and run `launch_indexer.py --once` again; there
+is no database reset or new migration.
