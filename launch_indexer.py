@@ -2,7 +2,7 @@ from __future__ import annotations
 import argparse, time, logging
 from config import SETTINGS
 from storage import Storage
-from arcscan import ArcscanClient
+from arcscan import ArcscanClient, ArcscanError
 from market_data import DexScreenerClient
 from launch_parser import extract_contract_candidates, extract_tokens_from_transfers
 
@@ -21,7 +21,7 @@ class LaunchIndexer:
         rows = extract_contract_candidates(contracts)
         for x in rows:
             self.db.upsert_candidate(x["address"], "arcscan_contracts", x["symbol"], x["name"], x["deployer"], x["deployment_block"], x["deployed_at"])
-        transfers = self.arcscan.explore_token_transfers(limit=self.cfg.launch_transfer_page_size, standard="ERC-20")
+        transfers = self.arcscan.explore_token_transfers(limit=self.cfg.launch_transfer_page_size, standard="erc20")
         rows2 = extract_tokens_from_transfers(transfers)
         for x in rows2:
             self.db.upsert_candidate(x["address"], "arcscan_transfers", x["symbol"], x["name"])
@@ -48,13 +48,18 @@ class LaunchIndexer:
             token = launch["token"]
             if token not in market_cache: market_cache[token] = self.market.token_snapshot(token)
             m = market_cache[token]
-            if not m: continue
+            if not m or not m.price_usd or m.price_usd <= 0: continue
+            if m.pair_address != launch["pair_address"]: continue
             self.db.save_launch_snapshot(token, horizon, target, m)
             done += 1
         return done
 
     def cycle(self):
-        a,b = self.discover(); p = self.promote_candidates(); s = self.snapshots()
+        try: a,b = self.discover()
+        except ArcscanError:
+            log.warning("discovery unavailable; continuing existing launch observations")
+            a,b = 0,0
+        p = self.promote_candidates(); s = self.snapshots()
         log.info("cycle contracts=%s transfer_tokens=%s promoted=%s snapshots=%s", a,b,p,s)
 
     def run(self):

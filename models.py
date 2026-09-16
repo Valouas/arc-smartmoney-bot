@@ -27,6 +27,7 @@ class TradeEvent:
     reputation_score: Optional[int] = None
     intelligence_class: Optional[str] = None
     confirmation_eligible: bool = True
+    trade_verified: bool = True
 
 @dataclass
 class MarketSnapshot:

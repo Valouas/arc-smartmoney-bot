@@ -1,0 +1,100 @@
+{
+  "items": [
+    {
+      "address": {
+        "address": "0x6be0ff94ff99d87581c080ea04778fcd65493cce",
+        "checksum": "0x6Be0FF94fF99D87581C080eA04778FCD65493Cce",
+        "is_contract": true,
+        "label": "magiccoin (MAGIC)",
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "creator": {
+        "address": "0xa6d09bfa73dcc201b6e9b30ca9cabfb59abbf26c",
+        "checksum": "0xA6d09bFa73dCc201b6E9B30CA9cAbfB59abBf26c",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "creation_block": 21175171,
+      "creation_tx_index": 29,
+      "creation_trace_index": null,
+      "timestamp": 1789570798,
+      "balance": {
+        "raw": "0",
+        "decimals": 18,
+        "formatted": "0",
+        "usd": "0",
+        "symbol": "USDC"
+      },
+      "code_size": null,
+      "proxy_checked": false,
+      "is_proxy": false,
+      "implementation": null,
+      "token": {
+        "address": "0x6be0ff94ff99d87581c080ea04778fcd65493cce",
+        "checksum": "0x6Be0FF94fF99D87581C080eA04778FCD65493Cce",
+        "name": "magiccoin",
+        "symbol": "MAGIC",
+        "decimals": 18,
+        "standard": "erc20",
+        "is_native_interface": false,
+        "reserved_name_check": "clear",
+        "shares_reserved_name": false,
+        "unverified_lookalike": false
+      },
+      "verified": false,
+      "contract_name": null,
+      "compiler": null,
+      "compiler_version": null,
+      "license": null,
+      "optimization": null,
+      "verified_at": null
+    }
+  ],
+  "page": {
+    "next": "eyJhIjoiMHg2YmUwZmY5NGZmOTlkODc1ODFjMDgwZWEwNDc3OGZjZDY1NDkzY2NlIiwiYiI6MjExNzUxNzF9",
+    "prev": null,
+    "has_more": true,
+    "window": {
+      "from_block": 21175171,
+      "to_block": 21175171,
+      "complete": false
+    },
+    "coverage": null
+  },
+  "total": 1524,
+  "total_is_estimate": false,
+  "ranking": {
+    "basis": "deployment block, newest first",
+    "basis_phrase": {
+      "key": "deploymentBlock",
+      "params": {}
+    },
+    "window": {
+      "from_block": 0,
+      "to_block": 21175900,
+      "complete": true
+    },
+    "computed_at": null,
+    "candidates": null,
+    "complete": true,
+    "note": "Every contract this chain has deployed is listed: Arcscan's index runs from this chain's first block, 0, to 21,175,900, so no deployment is excluded by the window. The deployer comes from the creation receipt, recorded when the block was indexed.",
+    "note_phrases": [
+      {
+        "key": "contractsFromGenesis",
+        "params": {
+          "from": 0,
+          "to": 21175900
+        }
+      }
+    ]
+  },
+  "facets": {
+    "all": 11825,
+    "verified": 284
+  }
+}

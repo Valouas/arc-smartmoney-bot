@@ -1,0 +1,51 @@
+{
+  "address": "0xa6d09bfa73dcc201b6e9b30ca9cabfb59abbf26c",
+  "checksum": "0xA6d09bFa73dCc201b6E9B30CA9cAbfB59abBf26c",
+  "available": true,
+  "unavailable_reason": null,
+  "history_complete": true,
+  "first": {
+    "hash": "0x2198e60b785fbd5ac33c7474d16915daf71c756a839bbe55c6458a1c408c528e",
+    "block": 21174949,
+    "tx_index": 69,
+    "timestamp": 1789570686,
+    "role": 18,
+    "is_deployment": false
+  },
+  "latest": {
+    "hash": "0x174f6f2c1f65b68954157e46e122a6e7355e212d16ae16fff230cbcb827c6c1f",
+    "block": 21175171,
+    "tx_index": 29,
+    "timestamp": 1789570798,
+    "role": 273,
+    "is_deployment": false
+  },
+  "funded_by": {
+    "status": "found",
+    "funder": {
+      "address": "0xc715abec49a7f9a2f11f6d017a02d408cf66a4a8",
+      "checksum": "0xc715Abec49a7f9A2f11F6d017a02D408Cf66a4a8",
+      "is_contract": null,
+      "label": null,
+      "tag": null,
+      "category": null,
+      "protocol": null
+    },
+    "tx": {
+      "hash": "0x2198e60b785fbd5ac33c7474d16915daf71c756a839bbe55c6458a1c408c528e",
+      "block": 21174949,
+      "tx_index": 69,
+      "timestamp": 1789570686,
+      "role": 16,
+      "is_deployment": false
+    },
+    "amount": {
+      "raw": "5809854186536222962173",
+      "decimals": 18,
+      "formatted": "5809.854186536222962173",
+      "usd": "5809.854186536222962173",
+      "symbol": "USDC"
+    }
+  },
+  "single": false
+}

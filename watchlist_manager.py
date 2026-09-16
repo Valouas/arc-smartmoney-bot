@@ -33,6 +33,6 @@ class WatchlistManager:
                     weight=int(x.get("weight",1)),
                     group=x.get("group",source)
                 )
-        changed=set(merged)!=set(self.items)
+        changed=merged!=self.items
         self.items=merged
         return changed

@@ -48,7 +48,8 @@ class ArcSmartMoneyBot:
     def run(self):
         self.rpc.sanity_check()
         head = self.rpc.block_number()
-        next_block = head if self.cfg.start_block.lower() == "latest" else int(self.cfg.start_block)
+        saved_block = self.db.next_block()
+        next_block = (saved_block if saved_block is not None else head) if self.cfg.start_block.lower() == "latest" else int(self.cfg.start_block)
         log.info("Arc scanner V3 online | chain=%s | head=%s | wallets=%s", self.cfg.chain_id, head, len(self.watch))
         log.info("READ-ONLY + PAPER MODE. No private key, signer or broadcaster is present.")
         stop_check_at = 0.0
@@ -58,14 +59,18 @@ class ArcSmartMoneyBot:
                     old = set(self.watch)
                     self.watch = self.watch_manager.items
                     new_addresses = [w.address for k,w in self.watch.items() if k not in old]
-                    if new_addresses:
+                    if new_addresses or old != set(self.watch):
                         self.identities = IdentityGraph(self.arcscan)
                         self.identities.refresh([w.address for w in self.watch.values()])
                         log.info("watchlist expanded by %s wallets", len(new_addresses))
+                if (any(not self.identities.eligible(w.address) for w in self.watch.values())
+                        and time.time() - self.identities.last_refresh >= self.cfg.watchlist_reload_seconds):
+                    self.identities.refresh([w.address for w in self.watch.values()])
                 head = self.rpc.block_number()
                 while next_block <= head:
                     self.process_block(next_block)
                     next_block += 1
+                    self.db.checkpoint(next_block)
                 if time.time() >= stop_check_at:
                     for x in self.paper.evaluate_stops(self.market):
                         msg = f"🧪 {x['action']} {x['symbol']} | PnL {x['pnl_usd']:+.2f}$ | {x['reason']}"
@@ -84,7 +89,7 @@ class ArcSmartMoneyBot:
             frm = str(tx.get("from", "")).lower()
             info = self.watch.get(frm)
             if not info: continue
-            tx_hash = tx["hash"].hex()
+            tx_hash = Web3.to_hex(tx["hash"])
             if self.db.tx_seen(tx_hash): continue
             try:
                 receipt = self.rpc.get_receipt(tx["hash"])
@@ -92,23 +97,44 @@ class ArcSmartMoneyBot:
                     self.db.mark_tx(tx_hash, n, ts); continue
                 detected = classify_trade(self.rpc, receipt, info.address, self.cfg.min_usdc_flow, native_value_wei=int(tx.get("value", 0) or 0))
             except Exception as e:
-                log.warning("cannot decode %s: %s", tx_hash, e); continue
-            self.db.mark_tx(tx_hash, n, ts)
+                raise RuntimeError(f"cannot decode {tx_hash}; block will retry") from e
             for d in detected:
                 old_rep = self.reputation.get(info.address)
                 intel = self.intelligence.effective(info.address, old_rep.score, info.weight)
                 e = TradeEvent(
                     tx_hash=tx_hash, block_number=n, timestamp=ts,
                     wallet=info.address, wallet_label=info.label, wallet_weight=intel["weight"],
+                    trade_verified=d["confirmation_eligible"],
                     side=d["side"], token=d["token"], token_symbol=d["symbol"],
                     token_amount=d["token_amount"], usdc_amount=d["usdc_amount"],
                     identity_id=self.identities.identity_id(info.address),
                     reputation_score=intel["score"], intelligence_class=intel["class"],
-                    confirmation_eligible=intel["eligible"],
+                    confirmation_eligible=(intel["eligible"] and d["confirmation_eligible"]
+                        and self.identities.eligible(info.address) and self.db.wallet_eligible(info.address)),
                 )
-                self.reputation.mark_signal(info.address); self.reputation.save(); self.db.add_event(e); self.handle_event(e)
+                if self.db.event_processed(e): continue
+                self.db.add_event(e)
+                self.handle_event(e)
+                self.db.mark_event_processed(e)
+                if e.trade_verified:
+                    self.reputation.mark_signal(info.address)
+                    self.reputation.save()
+            self.db.mark_tx(tx_hash, n, ts)
 
     def handle_event(self, event: TradeEvent):
+        # Re-evaluate buffered confirmations after removals, demotions or changes
+        # to identity membership. Old events must not retain stale authority.
+        for queues in self.clusters.events.values():
+            for queue in queues.values():
+                for prior in queue:
+                    info = self.watch.get(prior.wallet.lower())
+                    prior.confirmation_eligible = bool(info and prior.trade_verified
+                        and self.identities.eligible(prior.wallet) and self.db.wallet_eligible(prior.wallet))
+                    if info:
+                        intel = self.intelligence.effective(prior.wallet, prior.reputation_score, info.weight)
+                        prior.confirmation_eligible &= intel["eligible"]
+                        prior.wallet_weight = intel["weight"]
+                        prior.identity_id = self.identities.identity_id(prior.wallet)
         cluster = self.clusters.add(event)
         cluster.risk = self.risk.inspect(event.token)
         if cluster.risk and cluster.risk.market:
@@ -116,6 +142,8 @@ class ArcSmartMoneyBot:
         if event.side == "BUY":
             cluster.score = score_buy_cluster(cluster, cluster.risk, self.cfg)
             cluster.status = classify_status(cluster, cluster.risk, cluster.score, self.cfg)
+            if not event.confirmation_eligible and cluster.status == "VALIDATED":
+                cluster.status = "WATCH"
         else:
             cluster.score = min(100, cluster.cluster_weight * 15 + cluster.independent_identities * 10)
             cluster.status = "EXIT_CLUSTER" if cluster.independent_identities >= 2 else "EXIT_EARLY"

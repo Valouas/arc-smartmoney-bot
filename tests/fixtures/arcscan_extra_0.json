@@ -1,0 +1,504 @@
+{
+  "token": {
+    "address": "0xece5ca8bf9220718e5727754026757512212cb3c",
+    "checksum": "0xeCe5cA8bf9220718E5727754026757512212cb3c",
+    "name": "Argus",
+    "symbol": "ARGUS",
+    "decimals": 18,
+    "standard": "erc20",
+    "is_native_interface": false,
+    "reserved_name_check": "clear",
+    "shares_reserved_name": false,
+    "unverified_lookalike": false
+  },
+  "basis": "total_supply",
+  "basis_amount": {
+    "raw": "1000000000000000000000000000",
+    "decimals": 18,
+    "formatted": "1000000000",
+    "usd": null,
+    "symbol": "ARGUS"
+  },
+  "total_supply": {
+    "raw": "1000000000000000000000000000",
+    "decimals": 18,
+    "formatted": "1000000000",
+    "usd": null,
+    "symbol": "ARGUS"
+  },
+  "census": {
+    "enumerated": 11667,
+    "is_census": true,
+    "truncated": false,
+    "scan_cap": 25000,
+    "boundary_balance": null
+  },
+  "cohorts": [
+    {
+      "band": "top_1_5",
+      "from_rank": 1,
+      "to_rank": 5,
+      "holders": 5,
+      "amount": {
+        "raw": "148021802985444716793487047",
+        "decimals": 18,
+        "formatted": "148021802.985444716793487047",
+        "usd": null,
+        "symbol": "ARGUS"
+      },
+      "share": "14.8021",
+      "value": {
+        "usd": "3690375.397265717305800838633825535795425",
+        "price": {
+          "usdc": "0.024931296085000392685552188423928656029525004405429",
+          "depth_usdc": "583170.623513",
+          "depth_basis": "v3_native_balance",
+          "floor_usdc": "10000",
+          "source": {
+            "version": 3,
+            "pool": {
+              "address": "0x6a3bacaa6493734c1ac221ebf42cf530a96c1e02",
+              "checksum": "0x6A3bAcAa6493734c1Ac221EBF42CF530A96C1e02",
+              "is_contract": true,
+              "label": null,
+              "tag": null,
+              "category": null,
+              "protocol": null
+            },
+            "basis": "v3_sqrt_price"
+          },
+          "price_block": 21172099,
+          "depth_block": 21172099,
+          "price_block_time": 1789569242,
+          "as_of_block": 21172100,
+          "age_blocks": 58
+        }
+      },
+      "value_group": "priced",
+      "value_unavailable": null
+    },
+    {
+      "band": "top_6_10",
+      "from_rank": 6,
+      "to_rank": 10,
+      "holders": 5,
+      "amount": {
+        "raw": "97789250121883706945419232",
+        "decimals": 18,
+        "formatted": "97789250.121883706945419232",
+        "usd": null,
+        "symbol": "ARGUS"
+      },
+      "share": "9.7789",
+      "value": {
+        "usd": "2438012.748718843436219300011250736680627",
+        "price": {
+          "usdc": "0.024931296085000392685552188423928656029525004405429",
+          "depth_usdc": "583170.623513",
+          "depth_basis": "v3_native_balance",
+          "floor_usdc": "10000",
+          "source": {
+            "version": 3,
+            "pool": {
+              "address": "0x6a3bacaa6493734c1ac221ebf42cf530a96c1e02",
+              "checksum": "0x6A3bAcAa6493734c1Ac221EBF42CF530A96C1e02",
+              "is_contract": true,
+              "label": null,
+              "tag": null,
+              "category": null,
+              "protocol": null
+            },
+            "basis": "v3_sqrt_price"
+          },
+          "price_block": 21172099,
+          "depth_block": 21172099,
+          "price_block_time": 1789569242,
+          "as_of_block": 21172100,
+          "age_blocks": 58
+        }
+      },
+      "value_group": "priced",
+      "value_unavailable": null
+    },
+    {
+      "band": "top_11_25",
+      "from_rank": 11,
+      "to_rank": 25,
+      "holders": 15,
+      "amount": {
+        "raw": "185175444824952165221237524",
+        "decimals": 18,
+        "formatted": "185175444.824952165221237524",
+        "usd": null,
+        "symbol": "ARGUS"
+      },
+      "share": "18.5175",
+      "value": {
+        "usd": "4616663.842602536142814315064325471582178",
+        "price": {
+          "usdc": "0.024931296085000392685552188423928656029525004405429",
+          "depth_usdc": "583170.623513",
+          "depth_basis": "v3_native_balance",
+          "floor_usdc": "10000",
+          "source": {
+            "version": 3,
+            "pool": {
+              "address": "0x6a3bacaa6493734c1ac221ebf42cf530a96c1e02",
+              "checksum": "0x6A3bAcAa6493734c1Ac221EBF42CF530A96C1e02",
+              "is_contract": true,
+              "label": null,
+              "tag": null,
+              "category": null,
+              "protocol": null
+            },
+            "basis": "v3_sqrt_price"
+          },
+          "price_block": 21172099,
+          "depth_block": 21172099,
+          "price_block_time": 1789569242,
+          "as_of_block": 21172100,
+          "age_blocks": 58
+        }
+      },
+      "value_group": "priced",
+      "value_unavailable": null
+    },
+    {
+      "band": "top_26_50",
+      "from_rank": 26,
+      "to_rank": 50,
+      "holders": 25,
+      "amount": {
+        "raw": "162000434779409765899612987",
+        "decimals": 18,
+        "formatted": "162000434.779409765899612987",
+        "usd": null,
+        "symbol": "ARGUS"
+      },
+      "share": "16.2",
+      "value": {
+        "usd": "4038880.805384260150413973883088777496572",
+        "price": {
+          "usdc": "0.024931296085000392685552188423928656029525004405429",
+          "depth_usdc": "583170.623513",
+          "depth_basis": "v3_native_balance",
+          "floor_usdc": "10000",
+          "source": {
+            "version": 3,
+            "pool": {
+              "address": "0x6a3bacaa6493734c1ac221ebf42cf530a96c1e02",
+              "checksum": "0x6A3bAcAa6493734c1Ac221EBF42CF530A96C1e02",
+              "is_contract": true,
+              "label": null,
+              "tag": null,
+              "category": null,
+              "protocol": null
+            },
+            "basis": "v3_sqrt_price"
+          },
+          "price_block": 21172099,
+          "depth_block": 21172099,
+          "price_block_time": 1789569242,
+          "as_of_block": 21172100,
+          "age_blocks": 58
+        }
+      },
+      "value_group": "priced",
+      "value_unavailable": null
+    },
+    {
+      "band": "top_51_100",
+      "from_rank": 51,
+      "to_rank": 100,
+      "holders": 50,
+      "amount": {
+        "raw": "125550136032620087943518235",
+        "decimals": 18,
+        "formatted": "125550136.032620087943518235",
+        "usd": null,
+        "symbol": "ARGUS"
+      },
+      "share": "12.555",
+      "value": {
+        "usd": "3130127.614941327932563087174540724929212",
+        "price": {
+          "usdc": "0.024931296085000392685552188423928656029525004405429",
+          "depth_usdc": "583170.623513",
+          "depth_basis": "v3_native_balance",
+          "floor_usdc": "10000",
+          "source": {
+            "version": 3,
+            "pool": {
+              "address": "0x6a3bacaa6493734c1ac221ebf42cf530a96c1e02",
+              "checksum": "0x6A3bAcAa6493734c1Ac221EBF42CF530A96C1e02",
+              "is_contract": true,
+              "label": null,
+              "tag": null,
+              "category": null,
+              "protocol": null
+            },
+            "basis": "v3_sqrt_price"
+          },
+          "price_block": 21172099,
+          "depth_block": 21172099,
+          "price_block_time": 1789569242,
+          "as_of_block": 21172100,
+          "age_blocks": 58
+        }
+      },
+      "value_group": "priced",
+      "value_unavailable": null
+    },
+    {
+      "band": "outside_100",
+      "from_rank": 101,
+      "to_rank": null,
+      "holders": 11567,
+      "amount": {
+        "raw": "280549467026223259785100426",
+        "decimals": 18,
+        "formatted": "280549467.026223259785100426",
+        "usd": null,
+        "symbol": "ARGUS"
+      },
+      "share": "28.0549",
+      "value": {
+        "usd": "6994461.828919826716738587552577635597761",
+        "price": {
+          "usdc": "0.024931296085000392685552188423928656029525004405429",
+          "depth_usdc": "583170.623513",
+          "depth_basis": "v3_native_balance",
+          "floor_usdc": "10000",
+          "source": {
+            "version": 3,
+            "pool": {
+              "address": "0x6a3bacaa6493734c1ac221ebf42cf530a96c1e02",
+              "checksum": "0x6A3bAcAa6493734c1Ac221EBF42CF530A96C1e02",
+              "is_contract": true,
+              "label": null,
+              "tag": null,
+              "category": null,
+              "protocol": null
+            },
+            "basis": "v3_sqrt_price"
+          },
+          "price_block": 21172099,
+          "depth_block": 21172099,
+          "price_block_time": 1789569242,
+          "as_of_block": 21172100,
+          "age_blocks": 58
+        }
+      },
+      "value_group": "priced",
+      "value_unavailable": null
+    }
+  ],
+  "summary": {
+    "top5_share": "14.8021",
+    "top5_holders": 5,
+    "top10_share": "24.5811",
+    "top10_holders": 10,
+    "top100_share": "71.8537",
+    "top100_holders": 100,
+    "gini": {
+      "value": "0.965427723760965923",
+      "basis": "all_enumerated_holders",
+      "n": 11667
+    },
+    "holders_over_one_percent": 22
+  },
+  "tiers": {
+    "state": "ok",
+    "unavailable_reason": null,
+    "bands": [
+      {
+        "tier": "whale",
+        "min_usd": "1000000",
+        "max_usd": null,
+        "holders": 1,
+        "amount": {
+          "raw": "44539332742356387487346791",
+          "decimals": 18,
+          "formatted": "44539332.742356387487346791",
+          "usd": null,
+          "symbol": "ARGUS"
+        },
+        "value_usd": "1110423.292028039606990504073663469462587",
+        "share": "4.4539",
+        "holders_share": "0.0085",
+        "complete": true
+      },
+      {
+        "tier": "shark",
+        "min_usd": "100000",
+        "max_usd": "1000000",
+        "holders": 52,
+        "amount": {
+          "raw": "561279603042737121210659936",
+          "decimals": 18,
+          "formatted": "561279603.042737121210659936",
+          "usd": null,
+          "symbol": "ARGUS"
+        },
+        "value_usd": "13993427.96992996648411434945927706386818",
+        "share": "56.1279",
+        "holders_share": "0.4457",
+        "complete": true
+      },
+      {
+        "tier": "dolphin",
+        "min_usd": "10000",
+        "max_usd": "100000",
+        "holders": 223,
+        "amount": {
+          "raw": "243707507572848931474432404",
+          "decimals": 18,
+          "formatted": "243707507.572848931474432404",
+          "usd": null,
+          "symbol": "ARGUS"
+        },
+        "value_usd": "6075944.029436172117982133580131226832925",
+        "share": "24.3707",
+        "holders_share": "1.9113",
+        "complete": true
+      },
+      {
+        "tier": "fish",
+        "min_usd": "1000",
+        "max_usd": "10000",
+        "holders": 866,
+        "amount": {
+          "raw": "108252929120754564556914763",
+          "decimals": 18,
+          "formatted": "108252929.120754564556914763",
+          "usd": null,
+          "symbol": "ARGUS"
+        },
+        "value_usd": "2698885.827978093276944936588283635861988",
+        "share": "10.8252",
+        "holders_share": "7.4226",
+        "complete": true
+      },
+      {
+        "tier": "crab",
+        "min_usd": "100",
+        "max_usd": "1000",
+        "holders": 2507,
+        "amount": {
+          "raw": "34786289230917262388176728",
+          "decimals": 18,
+          "formatted": "34786289.230917262388176728",
+          "usd": null,
+          "symbol": "ARGUS"
+        },
+        "value_usd": "867267.2765144588648104634380444373643791",
+        "share": "3.4786",
+        "holders_share": "21.4879",
+        "complete": true
+      },
+      {
+        "tier": "shrimp",
+        "min_usd": null,
+        "max_usd": "100",
+        "holders": 8018,
+        "amount": {
+          "raw": "6520874060919435470844829",
+          "decimals": 18,
+          "formatted": "6520874.060919435470844829",
+          "usd": null,
+          "symbol": "ARGUS"
+        },
+        "value_usd": "162573.8419457813337077151802090486917188",
+        "share": "0.652",
+        "holders_share": "68.7237",
+        "complete": true
+      }
+    ]
+  },
+  "wallet_depth": {
+    "state": "ok",
+    "unavailable_reason": null,
+    "rows": [
+      {
+        "min_usd": "10",
+        "holders": 7351,
+        "holders_share": "63.0067",
+        "complete": true
+      },
+      {
+        "min_usd": "50",
+        "holders": 4795,
+        "holders_share": "41.0988",
+        "complete": true
+      },
+      {
+        "min_usd": "100",
+        "holders": 3649,
+        "holders_share": "31.2762",
+        "complete": true
+      },
+      {
+        "min_usd": "250",
+        "holders": 2462,
+        "holders_share": "21.1022",
+        "complete": true
+      },
+      {
+        "min_usd": "500",
+        "holders": 1696,
+        "holders_share": "14.5367",
+        "complete": true
+      },
+      {
+        "min_usd": "1000",
+        "holders": 1142,
+        "holders_share": "9.7882",
+        "complete": true
+      },
+      {
+        "min_usd": "10000",
+        "holders": 276,
+        "holders_share": "2.3656",
+        "complete": true
+      },
+      {
+        "min_usd": "100000",
+        "holders": 53,
+        "holders_share": "0.4542",
+        "complete": true
+      },
+      {
+        "min_usd": "1000000",
+        "holders": 1,
+        "holders_share": "0.0085",
+        "complete": true
+      }
+    ]
+  },
+  "price": {
+    "usdc": "0.024931296085000392685552188423928656029525004405429",
+    "depth_usdc": "583170.623513",
+    "depth_basis": "v3_native_balance",
+    "floor_usdc": "10000",
+    "source": {
+      "version": 3,
+      "pool": {
+        "address": "0x6a3bacaa6493734c1ac221ebf42cf530a96c1e02",
+        "checksum": "0x6A3bAcAa6493734c1Ac221EBF42CF530A96C1e02",
+        "is_contract": true,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "basis": "v3_sqrt_price"
+    },
+    "price_block": 21172099,
+    "depth_block": 21172099,
+    "price_block_time": 1789569242,
+    "as_of_block": 21172100,
+    "age_blocks": 58
+  },
+  "price_unavailable": null,
+  "liquidity": null
+}

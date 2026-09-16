@@ -1,0 +1,81 @@
+{
+  "items": [
+    {
+      "log_index": 309,
+      "token": {
+        "address": "0x3600000000000000000000000000000000000000",
+        "checksum": "0x3600000000000000000000000000000000000000",
+        "name": "USD Coin",
+        "symbol": "USDC",
+        "decimals": 6,
+        "standard": "erc20",
+        "is_native_interface": true,
+        "reserved_name_check": "clear",
+        "shares_reserved_name": false,
+        "unverified_lookalike": false
+      },
+      "from": {
+        "address": "0x1116359957fd9147a1dd4ae6c0aef6529f20537f",
+        "checksum": "0x1116359957fD9147a1DD4ae6C0aEf6529f20537F",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "to": {
+        "address": "0x42170295f1173c9e5874ea9d00c6d137e1a4f53d",
+        "checksum": "0x42170295F1173c9e5874ea9d00c6d137E1a4f53d",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "amount": {
+        "raw": "299250000",
+        "decimals": 6,
+        "formatted": "299.25",
+        "usd": "299.25",
+        "symbol": "USDC"
+      },
+      "token_id": null,
+      "native_parity": true,
+      "tx_hash": "0x87b1330fe49130a0df3bdf994f4609be7f4f589485921ea48927f10e60358c7d",
+      "block": 21175890,
+      "timestamp": 1789571163,
+      "method": {
+        "selector": "0x0c307f76",
+        "name": null,
+        "is_precompile": false,
+        "is_creation": false
+      }
+    }
+  ],
+  "page": {
+    "next": "eyJiIjoyMTE3NTg5MCwibCI6MzA5fQ",
+    "prev": null,
+    "has_more": true,
+    "window": {
+      "from_block": 21175890,
+      "to_block": 21175890,
+      "complete": false
+    },
+    "coverage": {
+      "source": "index",
+      "indexed": true,
+      "stream": "chain",
+      "from_block": 0,
+      "to_block": 21175890,
+      "last_contiguous_block": 21175890,
+      "gaps": [],
+      "gap_blocks": 0,
+      "message": null,
+      "message_key": null,
+      "message_phrase": null
+    }
+  },
+  "total": 100000,
+  "capped": true,
+  "oldest_cursor": "eyJiIjo3MDcwMjAsImwiOjB9"
+}

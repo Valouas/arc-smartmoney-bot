@@ -47,7 +47,7 @@ def _extract_contract_row(row):
         deployer = _addr(row.get(k))
         if deployer: break
     block = None
-    for k in ("block","block_number","deployment_block","created_block"):
+    for k in ("block","block_number","deployment_block","created_block","creation_block"):
         block = _int(row.get(k))
         if block is not None: break
     timestamp = None
@@ -57,6 +57,7 @@ def _extract_contract_row(row):
             if timestamp > 10_000_000_000: timestamp //= 1000
             break
     is_erc20 = "ERC-20" in standard or "ERC20" in standard
+    if standard and not is_erc20: return None
     return {"address":address,"symbol":symbol,"name":name,"deployer":deployer,"deployment_block":block,"deployed_at":timestamp,"is_erc20":is_erc20}
 
 def extract_contract_candidates(data):
@@ -78,6 +79,7 @@ def extract_tokens_from_transfers(data):
             addr = _addr(token)
             symbol = None; name = None
             if isinstance(token, dict):
+                if str(token.get("standard", "erc20")).lower().replace("-", "") != "erc20": continue
                 symbol = token.get("symbol"); name = token.get("name")
             if not addr:
                 for k in ("token_address","contract_address","address"):

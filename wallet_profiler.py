@@ -7,6 +7,7 @@ from pathlib import Path
 from config import SETTINGS
 from storage import Storage
 from wallet_metrics import profile_from_rows
+from atomic_json import write_json
 
 logging.basicConfig(
     level=getattr(logging, SETTINGS.log_level, logging.INFO),
@@ -44,13 +45,13 @@ class WalletProfiler:
         rows = self.db.db.execute(
             """
             SELECT e.*, l.pair_created_at,
-                   tc.price_usd AS entry_price
+                   CASE WHEN e.token_amount>0 THEN e.usdc_amount/e.token_amount END AS entry_price
             FROM events e
             JOIN launches l ON lower(l.token)=lower(e.token)
             LEFT JOIN trade_context tc
               ON tc.tx_hash=e.tx_hash AND lower(tc.token)=lower(e.token)
               AND lower(tc.wallet)=lower(e.wallet)
-            WHERE lower(e.wallet)=? AND e.side='BUY'
+            WHERE lower(e.wallet)=? AND e.side='BUY' AND e.trade_verified=1
             ORDER BY e.timestamp
             """,
             (wallet.lower(),)
@@ -76,19 +77,19 @@ class WalletProfiler:
         for token, x in by_token.items():
             snaps = self.db.db.execute(
                 """SELECT horizon_minutes,price_usd FROM launch_snapshots
-                   WHERE token=? AND observed_at>=? AND price_usd IS NOT NULL
+                   WHERE token=? AND observed_at>? AND price_usd IS NOT NULL
                    ORDER BY observed_at""",
                 (token, x["first_ts"])
             ).fetchall()
             future_prices = [float(s["price_usd"]) for s in snaps if s["price_usd"]]
             sell = self.db.db.execute(
                 """
-                SELECT tc.price_usd AS exit_price
+                SELECT CASE WHEN e.token_amount>0 THEN e.usdc_amount/e.token_amount END AS exit_price
                 FROM events e
                 LEFT JOIN trade_context tc
                   ON tc.tx_hash=e.tx_hash AND lower(tc.token)=lower(e.token)
                   AND lower(tc.wallet)=lower(e.wallet)
-                WHERE lower(e.wallet)=? AND lower(e.token)=? AND e.side='SELL'
+                WHERE lower(e.wallet)=? AND lower(e.token)=? AND e.side='SELL' AND e.trade_verified=1
                   AND e.timestamp>=?
                 ORDER BY e.timestamp LIMIT 1
                 """,
@@ -120,13 +121,10 @@ class WalletProfiler:
             self.db.save_wallet_profile(p)
             profiles.append(p)
         profiles.sort(key=lambda x: (-x["smart_score"], x["wallet"]))
-        Path("data/wallet_intelligence.json").write_text(
-            json.dumps({
-                "generated_at": int(time.time()),
-                "profiles": {p["wallet"]: p for p in profiles}
-            }, indent=2),
-            encoding="utf-8"
-        )
+        write_json("data/wallet_intelligence.json", {
+            "generated_at": int(time.time()),
+            "profiles": {p["wallet"]: p for p in profiles},
+        })
         log.info("profiled %s wallets", len(profiles))
         for p in profiles[:10]:
             log.info(

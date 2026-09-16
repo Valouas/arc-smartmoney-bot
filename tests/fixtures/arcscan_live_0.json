@@ -1,0 +1,11 @@
+{
+  "address": "0x3600000000000000000000000000000000000000",
+  "checksum": "0x3600000000000000000000000000000000000000",
+  "available": false,
+  "unavailable_reason": "index_unreachable",
+  "history_complete": false,
+  "first": null,
+  "latest": null,
+  "funded_by": null,
+  "single": false
+}

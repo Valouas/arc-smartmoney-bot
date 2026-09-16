@@ -1,5 +1,6 @@
 from __future__ import annotations
 import requests
+import math
 from typing import Optional
 from models import MarketSnapshot
 
@@ -32,6 +33,9 @@ class DexScreenerClient:
             except Exception:
                 pairs = []
 
+        # priceUsd, symbol and marketCap describe baseToken, never quoteToken.
+        pairs = [p for p in pairs if p.get("chainId") == self.chain_id
+                 and str((p.get("baseToken") or {}).get("address", "")).lower() == token.lower()]
         if not pairs: return None
 
         def liq(p):
@@ -42,7 +46,9 @@ class DexScreenerClient:
         txns = p.get("txns") or {}
         m5 = txns.get("m5") or {}
         def f(x):
-            try: return float(x) if x is not None else None
+            try:
+                value = float(x)
+                return value if math.isfinite(value) and value >= 0 else None
             except Exception: return None
         def i(x):
             try: return int(x) if x is not None else None

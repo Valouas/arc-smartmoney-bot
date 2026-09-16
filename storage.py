@@ -129,22 +129,75 @@ class Storage:
         self.db = sqlite3.connect(path, timeout=10)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA busy_timeout=5000")
-        self.db.executescript(SCHEMA)
+        self.db.execute("PRAGMA busy_timeout=10000")
+        self.db.executescript(SCHEMA + V4_SCHEMA)
+        self._migrate()
         self.db.commit()
 
+    def _migrate(self):
+        # Serialize check-and-alter across all four processes (WAL is not a
+        # substitute for a migration lock). Additive migration preserves V3/V4.
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            columns = {r[1] for r in self.db.execute("PRAGMA table_info(discovery_candidates)")}
+            if "history_complete" not in columns:
+                self.db.execute("ALTER TABLE discovery_candidates ADD COLUMN history_complete INTEGER NOT NULL DEFAULT 0")
+                self.db.execute("UPDATE discovery_candidates SET status='QUARANTINE',hydrated_at=NULL,promotion_reason='requires_audit_revalidation'")
+                self.db.execute("UPDATE promoted_wallets SET enabled=0")
+            research_columns = {r[1] for r in self.db.execute("PRAGMA table_info(research_trades)")}
+            if "trade_verified" not in research_columns:
+                self.db.execute("ALTER TABLE research_trades ADD COLUMN trade_verified INTEGER NOT NULL DEFAULT 0")
+            event_columns = {r[1] for r in self.db.execute("PRAGMA table_info(events)")}
+            if "trade_verified" not in event_columns:
+                self.db.execute("ALTER TABLE events ADD COLUMN trade_verified INTEGER NOT NULL DEFAULT 0")
+            self.db.execute("CREATE TABLE IF NOT EXISTS processed_events (tx_hash TEXT, wallet TEXT, token TEXT, side TEXT, PRIMARY KEY(tx_hash,wallet,token,side))")
+            self.db.execute("CREATE TABLE IF NOT EXISTS scanner_state (key TEXT PRIMARY KEY, value INTEGER NOT NULL)")
+            self.db.execute("CREATE TABLE IF NOT EXISTS snapshot_attempts (token TEXT, horizon INTEGER, checked_at INTEGER NOT NULL, PRIMARY KEY(token,horizon))")
+            self.db.execute("PRAGMA user_version=1")
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def wallet_eligible(self, wallet):
+        row = self.db.execute("SELECT status,history_complete FROM discovery_candidates WHERE wallet=?", (wallet.lower(),)).fetchone()
+        if row is None: return True  # Manually curated seed.
+        if row["status"] != "PROMOTED" or not row["history_complete"]: return False
+        return self.db.execute("SELECT 1 FROM promoted_wallets WHERE wallet=? AND enabled=1", (wallet.lower(),)).fetchone() is not None
+
+    def event_processed(self, e):
+        return self.db.execute("SELECT 1 FROM processed_events WHERE tx_hash=? AND wallet=? AND token=? AND side=?",
+                               (e.tx_hash.lower(), e.wallet.lower(), e.token.lower(), e.side)).fetchone() is not None
+
+    def mark_event_processed(self, e):
+        self.db.execute("INSERT OR IGNORE INTO processed_events VALUES(?,?,?,?)",
+                        (e.tx_hash.lower(), e.wallet.lower(), e.token.lower(), e.side))
+        self.db.commit()
+
+    def checkpoint(self, block):
+        self.db.execute("INSERT OR REPLACE INTO scanner_state VALUES('next_block', ?)", (block,))
+        self.db.commit()
+
+    def next_block(self):
+        row = self.db.execute("SELECT value FROM scanner_state WHERE key='next_block'").fetchone()
+        return row[0] if row else None
+
     def tx_seen(self, tx_hash: str) -> bool:
-        return self.db.execute("SELECT 1 FROM seen_txs WHERE tx_hash=?", (tx_hash,)).fetchone() is not None
+        canonical = tx_hash.lower().removeprefix("0x")
+        return self.db.execute("SELECT 1 FROM seen_txs WHERE lower(tx_hash) IN (?,?)", (canonical, "0x"+canonical)).fetchone() is not None
 
     def mark_tx(self, tx_hash: str, block_number: int, ts: int):
         self.db.execute("INSERT OR IGNORE INTO seen_txs VALUES (?,?,?)", (tx_hash, block_number, ts))
         self.db.commit()
 
     def add_event(self, e):
+        if self.db.execute("SELECT 1 FROM events WHERE lower(tx_hash)=? AND lower(wallet)=? AND lower(token)=? AND side=?",
+                           (e.tx_hash.lower(), e.wallet.lower(), e.token.lower(), e.side)).fetchone():
+            return
         self.db.execute(
-            """INSERT INTO events(tx_hash,block_number,timestamp,wallet,side,token,symbol,token_amount,usdc_amount)
-               VALUES(?,?,?,?,?,?,?,?,?)""",
-            (e.tx_hash,e.block_number,e.timestamp,e.wallet,e.side,e.token,e.token_symbol,e.token_amount,e.usdc_amount)
+            """INSERT INTO events(tx_hash,block_number,timestamp,wallet,side,token,symbol,token_amount,usdc_amount,trade_verified)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (e.tx_hash,e.block_number,e.timestamp,e.wallet,e.side,e.token,e.token_symbol,e.token_amount,e.usdc_amount,int(e.trade_verified))
         )
         self.db.commit()
 
@@ -175,20 +228,22 @@ class Storage:
         return self.db.execute("SELECT * FROM paper_positions WHERE token=?", (token,)).fetchone()
 
     def open_position(self, token, symbol, ts, price, notional, qty):
-        self.db.execute(
+        changed = self.db.execute(
             """INSERT OR IGNORE INTO paper_positions(token,symbol,opened_at,entry_price,notional_usd,quantity,status)
                VALUES(?,?,?,?,?,?, 'OPEN')""",
             (token,symbol,ts,price,notional,qty)
-        )
+        ).rowcount
         self.db.commit()
+        return changed == 1
 
     def close_position(self, token, ts, price, pnl, reason):
-        self.db.execute(
+        changed = self.db.execute(
             """UPDATE paper_positions SET status='CLOSED',closed_at=?,exit_price=?,pnl_usd=?,exit_reason=?
                WHERE token=? AND status='OPEN'""",
             (ts,price,pnl,reason,token)
-        )
+        ).rowcount
         self.db.commit()
+        return changed == 1
 
     def open_positions(self):
         return self.db.execute("SELECT * FROM paper_positions WHERE status='OPEN'").fetchall()
@@ -221,7 +276,7 @@ class Storage:
                WHERE status='CANDIDATE'
                  AND first_seen_at >= ?
                  AND last_checked_at <= ?
-               ORDER BY first_seen_at DESC LIMIT ?""",
+               ORDER BY last_checked_at ASC, first_seen_at ASC LIMIT ?""",
             (cutoff, now - recheck_seconds, limit)
         ).fetchall()
 
@@ -254,7 +309,9 @@ class Storage:
     def launches_due_snapshot(self, horizons=(5,15,60,360,1440), limit=100):
         now = int(time.time())
         out = []
-        rows = self.db.execute("SELECT * FROM launches ORDER BY pair_created_at DESC LIMIT 5000").fetchall()
+        attempts = {(r["token"], r["horizon"]): r["checked_at"]
+                    for r in self.db.execute("SELECT * FROM snapshot_attempts")}
+        rows = self.db.execute("SELECT * FROM launches ORDER BY pair_created_at ASC").fetchall()
         for row in rows:
             for h in horizons:
                 target = int(row["pair_created_at"]) + h*60
@@ -263,9 +320,12 @@ class Storage:
                 exists = self.db.execute("SELECT 1 FROM launch_snapshots WHERE token=? AND horizon_minutes=?", (row["token"], h)).fetchone()
                 if not exists:
                     out.append((row, h, target))
-                    if len(out) >= limit:
-                        return out
-        return out
+        out.sort(key=lambda item: (attempts.get((item[0]["token"], item[1]), 0), item[2]))
+        selected = out[:limit]
+        self.db.executemany("INSERT OR REPLACE INTO snapshot_attempts VALUES(?,?,?)",
+                            [(r["token"], h, now) for r,h,_ in selected])
+        self.db.commit()
+        return selected
 
     def save_launch_snapshot(self, token, horizon, target_at, market):
         now = int(time.time())
@@ -290,6 +350,50 @@ class Storage:
             (profile["wallet"].lower(), profile["generated_at"], profile["smart_score"],
              profile["profile_class"], profile["recommended_weight"],
              1 if profile["confirmation_eligible"] else 0, json.dumps(profile, default=str))
+        )
+        self.db.commit()
+
+    def add_research_trade(self, e):
+        price = (e.usdc_amount / e.token_amount) if e.token_amount else None
+        self.db.execute(
+            """INSERT INTO research_trades(
+               tx_hash,wallet,block_number,timestamp,side,token,symbol,
+               token_amount,usdc_amount,execution_price_usd,trade_verified
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(tx_hash,wallet,token,side) DO UPDATE SET
+                token_amount=excluded.token_amount,usdc_amount=excluded.usdc_amount,
+                execution_price_usd=excluded.execution_price_usd,trade_verified=excluded.trade_verified""",
+            (e.tx_hash,e.wallet.lower(),e.block_number,e.timestamp,e.side,e.token.lower(),
+             e.token_symbol,e.token_amount,e.usdc_amount,price,int(e.trade_verified))
+        )
+        self.db.commit()
+
+    def upsert_discovery_candidate(self, wallet, token, rank):
+        now=int(time.time())
+        w=wallet.lower(); t=token.lower()
+        self.db.execute(
+            """INSERT OR IGNORE INTO discovery_candidates(
+               wallet,first_discovered_at,last_discovered_at,source_winners,best_early_rank,status
+            ) VALUES(?,?,?,0,?,'QUARANTINE')""", (w,now,now,rank)
+        )
+        inserted = self.db.execute("INSERT OR IGNORE INTO candidate_sources(wallet,token,early_rank,discovered_at) VALUES(?,?,?,?)", (w,t,rank,now)).rowcount
+        if inserted:
+            self.db.execute(
+                """UPDATE discovery_candidates SET source_winners=source_winners+1,last_discovered_at=?,
+                       best_early_rank=CASE WHEN best_early_rank IS NULL THEN ? WHEN ? < best_early_rank THEN ? ELSE best_early_rank END
+                   WHERE wallet=?""", (now,rank,rank,rank,w)
+            )
+        self.db.commit()
+
+    def save_promoted_wallet(self, wallet, score, profile_class, weight, label):
+        now=int(time.time())
+        self.db.execute(
+            """INSERT OR REPLACE INTO promoted_wallets(wallet,promoted_at,smart_score,profile_class,weight,label,enabled)
+            VALUES(?,?,?,?,?,?,1)""", (wallet.lower(),now,score,profile_class,weight,label)
+        )
+        self.db.execute(
+            """UPDATE discovery_candidates SET status='PROMOTED',profile_score=?,profile_class=?,promotion_reason='passed_v4_gates' WHERE wallet=?""",
+            (score,profile_class,wallet.lower())
         )
         self.db.commit()
 
@@ -344,58 +448,3 @@ CREATE TABLE IF NOT EXISTS promoted_wallets (
     enabled INTEGER NOT NULL DEFAULT 1
 );
 """
-
-def _storage_v4_init(self):
-    self.db.executescript(V4_SCHEMA)
-    self.db.commit()
-Storage._v4_init = _storage_v4_init
-_old_init = Storage.__init__
-def _new_init(self, path="data/arc_bot.sqlite3"):
-    _old_init(self, path)
-    self._v4_init()
-Storage.__init__ = _new_init
-
-def _add_research_trade(self, e):
-    price = (e.usdc_amount / e.token_amount) if e.token_amount else None
-    self.db.execute(
-        """INSERT OR IGNORE INTO research_trades(
-           tx_hash,wallet,block_number,timestamp,side,token,symbol,
-           token_amount,usdc_amount,execution_price_usd
-        ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
-        (e.tx_hash,e.wallet.lower(),e.block_number,e.timestamp,e.side,e.token.lower(),
-         e.token_symbol,e.token_amount,e.usdc_amount,price)
-    )
-    self.db.commit()
-Storage.add_research_trade = _add_research_trade
-
-def _upsert_discovery_candidate(self, wallet, token, rank):
-    now=int(time.time())
-    w=wallet.lower(); t=token.lower()
-    new_source = self.db.execute("SELECT 1 FROM candidate_sources WHERE wallet=? AND token=?", (w,t)).fetchone() is None
-    self.db.execute(
-        """INSERT OR IGNORE INTO discovery_candidates(
-           wallet,first_discovered_at,last_discovered_at,source_winners,best_early_rank,status
-        ) VALUES(?,?,?,0,?,'QUARANTINE')""", (w,now,now,rank)
-    )
-    if new_source:
-        self.db.execute("INSERT OR IGNORE INTO candidate_sources(wallet,token,early_rank,discovered_at) VALUES(?,?,?,?)", (w,t,rank,now))
-        self.db.execute(
-            """UPDATE discovery_candidates SET source_winners=source_winners+1,last_discovered_at=?,
-                   best_early_rank=CASE WHEN best_early_rank IS NULL THEN ? WHEN ? < best_early_rank THEN ? ELSE best_early_rank END
-               WHERE wallet=?""", (now,rank,rank,rank,w)
-        )
-    self.db.commit()
-Storage.upsert_discovery_candidate = _upsert_discovery_candidate
-
-def _save_promoted_wallet(self, wallet, score, profile_class, weight, label):
-    now=int(time.time())
-    self.db.execute(
-        """INSERT OR REPLACE INTO promoted_wallets(wallet,promoted_at,smart_score,profile_class,weight,label,enabled)
-        VALUES(?,?,?,?,?,?,1)""", (wallet.lower(),now,score,profile_class,weight,label)
-    )
-    self.db.execute(
-        """UPDATE discovery_candidates SET status='PROMOTED',profile_score=?,profile_class=?,promotion_reason='passed_v4_gates' WHERE wallet=?""",
-        (score,profile_class,wallet.lower())
-    )
-    self.db.commit()
-Storage.save_promoted_wallet = _save_promoted_wallet

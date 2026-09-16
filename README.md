@@ -15,7 +15,7 @@ WINNER EARLY BUYER
     ↓
 QUARANTINE
     ↓
-FULL ARC HISTORY RECONSTRUCTION
+VERIFIED OBSERVABLE HISTORY
     ↓
 SELECTIVITY / HIT RATE / CONVICTION / PRECOCITY PROFILE
     ↓
@@ -51,7 +51,7 @@ For a new winner V4:
 3. looks at the earliest recipients;
 4. fetches the transaction and receipt from Arc RPC;
 5. only accepts an address as an early buyer when the receipt actually shows it
-   receiving that token while spending observable USDC.
+   receiving that token while spending net observable USDC, with supported swap evidence.
 
 Plain transfers, airdrops and arbitrary recipients are therefore not promoted as
 buyers merely because they received the token.
@@ -94,7 +94,7 @@ These are intentionally stricter than simply finding two winners.
 
 ## Why losers matter
 
-For every candidate V4 reconstructs **all observable Arc launch buys**, not only
+For every candidate V4 reconstructs **verified observable Arc launch buys**, not only
 the token through which the wallet was discovered.
 
 Execution price is calculated from the transaction's observed:
@@ -159,3 +159,15 @@ python run_v4.py
 
 This package remains a research / paper-trading system. It contains no private
 key loader, signer or automatic real-money transaction broadcaster.
+
+## V4 audit and verification
+
+See [the issue #1 audit](docs/AUDIT_V4.md) for fixes, observed API schemas,
+limitations and migration effects. The system reconstructs **verified observable
+history**, not a guaranteed complete economic history. Unknown/capped histories
+stay in quarantine. Gross native value without net mirror evidence cannot confirm
+signals. Legacy automatic promotions must be revalidated after migration.
+
+Install test dependencies with `pip install -r requirements-dev.txt` and run
+`python -m pytest -m "not network" -q`. Public network contract tests are opt-in:
+set `ARC_RUN_NETWORK=1` and run `python -m pytest -m network -v`.

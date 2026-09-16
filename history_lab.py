@@ -6,7 +6,7 @@ from pathlib import Path
 from web3 import Web3
 from config import SETTINGS
 from rpc import ArcRPC, USDC_ERC20, TRANSFER_TOPIC
-from decoder import wallet_token_deltas
+from decoder import classify_trade
 from arcscan import ArcscanClient
 from reputation import ReputationBook
 from identity_graph import IdentityGraph
@@ -55,7 +55,7 @@ class HistoryLab:
             except Exception:
                 if block_chunk > 1000:
                     block_chunk = max(1000, block_chunk // 4); continue
-                frm = to + 1; continue
+                return [], "log_range_unavailable"
             frm = to + 1
         logs.sort(key=lambda x: (int(x["blockNumber"]), int(x.get("logIndex", 0))))
         return logs[:max_logs], None
@@ -75,25 +75,25 @@ class HistoryLab:
             try:
                 receipt=self.rpc.get_receipt(log["transactionHash"])
                 tx=self.rpc.w3.eth.get_transaction(log["transactionHash"])
-                deltas=wallet_token_deltas(receipt,to)
-            except Exception: continue
-            token_delta=deltas.get(Web3.to_checksum_address(token),0)
-            usdc_delta=deltas.get(USDC_ERC20,0)
-            native_spent=int(tx.get("value",0) or 0)/1e18 if str(tx.get("from","")).lower()==to.lower() else 0.0
-            observed_spend=max(0.0,-usdc_delta/1_000_000)+native_spent
-            if token_delta>0 and observed_spend>0:
+                detected=classify_trade(self.rpc,receipt,to,SETTINGS.min_usdc_flow,
+                    native_value_wei=int(tx.get("value",0) or 0) if str(tx.get("from","")).lower()==to.lower() else 0)
+            except Exception: return {"symbol":symbol,"token":token,"error":"receipt_incomplete","buyers":[]}
+            buys=[e for e in detected if e["token"].lower()==token.lower() and e["side"]=="BUY" and e["confirmation_eligible"]]
+            if buys:
+                observed_spend=buys[0]["usdc_amount"]
                 rank+=1
                 candidates.append({"rank":rank,"wallet":to.lower(),"tx_hash":log["transactionHash"].hex(),"block":int(log["blockNumber"]),"usdc_spent":observed_spend})
                 if len(candidates)>=max_candidates: break
         return {"symbol":symbol,"token":token,"buyers":candidates}
 
     def run(self, max_candidates=100):
+        self.rpc.sanity_check()
         results=[]; overlap=defaultdict(list)
         for item in load_winners():
             print(f"[history] {item['symbol']} ...", flush=True)
             r=self.analyze_token(item["symbol"],item["address"],max_candidates=max_candidates); results.append(r)
             for b in r.get("buyers",[]):
-                overlap[b["wallet"]].append({"symbol":item["symbol"],"rank":b["rank"]}); self.rep.mark_known_winner(b["wallet"],b["rank"])
+                overlap[b["wallet"]].append({"symbol":item["symbol"],"rank":b["rank"]})
         addresses=list(overlap)
         if addresses: self.identity.refresh(addresses)
         ranked=[]
@@ -101,7 +101,6 @@ class HistoryLab:
             rep=self.rep.get(wallet)
             ranked.append({"wallet":wallet,"winner_count":len({h['symbol'] for h in hits}),"hits":hits,"reputation_score":rep.score,"dynamic_weight":rep.dynamic_weight,"funded_by":getattr(self.identity.facts.get(wallet),"funded_by",None),"identity_cluster":self.identity.identity_id(wallet)})
         ranked.sort(key=lambda x:(-x["winner_count"],-x["reputation_score"],min(h["rank"] for h in x["hits"])))
-        self.rep.save()
         out={"generated_at":int(time.time()),"tokens":results,"ranked_wallets":ranked,"identity_clusters":self.identity.cluster_map()}
         Path("data/history_report.json").write_text(json.dumps(out,indent=2),encoding="utf-8")
         return out
