@@ -241,12 +241,20 @@ class Storage:
                         (e.tx_hash.lower(), e.wallet.lower(), e.token.lower(), e.side))
         self.commit()
 
+    def begin_block(self, block):
+        pending = self.db.execute("SELECT value FROM scanner_state WHERE key='pending_block'").fetchone()
+        if pending and pending[0] != block:
+            raise RuntimeError("Incomplete scanner block must be retried first")
+        self.db.execute("INSERT OR REPLACE INTO scanner_state VALUES('pending_block', ?)", (block,))
+        self.commit()
+
     def checkpoint(self, block):
         self.db.execute("INSERT OR REPLACE INTO scanner_state VALUES('next_block', ?)", (block,))
+        self.db.execute("DELETE FROM scanner_state WHERE key='pending_block'")
         self.commit()
 
     def next_block(self):
-        row = self.db.execute("SELECT value FROM scanner_state WHERE key='next_block'").fetchone()
+        row = self.db.execute("SELECT value FROM scanner_state WHERE key IN ('pending_block','next_block') ORDER BY key DESC LIMIT 1").fetchone()
         return row[0] if row else None
 
     def tx_seen(self, tx_hash: str) -> bool:

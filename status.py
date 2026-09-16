@@ -25,6 +25,10 @@ for r in db.execute("SELECT created_at,side,status,score,token FROM signals ORDE
 
 print("\n=== DELIVERY / DISCOVERY HEALTH ===")
 tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+if "scanner_state" in tables:
+    state={r['key']:r['value'] for r in db.execute("SELECT key,value FROM scanner_state")}
+    print("Scanner checkpoint next_block:",state.get('next_block'))
+    print("Scanner pending block (not completed):",state.get('pending_block'))
 if "alert_outbox" in tables:
     for r in db.execute("SELECT state,COUNT(*) count FROM alert_outbox GROUP BY state"):
         print(dict(r))

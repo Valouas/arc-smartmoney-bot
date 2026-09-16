@@ -29,13 +29,14 @@ def api():
     c.s.close()
 
 
-def test_live_chain_identity(api):
+def test_live_chain_identity(api, tmp_path):
     chain=api._json('/chain')
     assert chain['chain_id']==5042 and chain['native']['decimals']==18
     assert chain['erc20_native']['address']==USDC and chain['erc20_native']['decimals']==6
-    response=api.s.post('https://rpc.arc-scan.org',json={'jsonrpc':'2.0','id':1,'method':'eth_chainId','params':[]},timeout=15)
-    response.raise_for_status()
-    assert int(response.json()['result'],16)==5042
+    from rpc_transport import ResilientRPCProvider, SharedRateLimiter
+    rpc=ResilientRPCProvider('https://rpc.arc-scan.org', 5042,
+        SharedRateLimiter(tmp_path/'rate.sqlite3'), session=api.s)
+    assert int(rpc.make_request('eth_chainId',[])['result'],16)==5042
 
 
 @pytest.mark.parametrize('kind',['overview','facts','activity','contracts','transfers','token_transfers','concentration'])

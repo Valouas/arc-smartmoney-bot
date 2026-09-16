@@ -4,7 +4,7 @@ from web3 import Web3
 
 from config import SETTINGS
 from models import WalletInfo, TradeEvent
-from rpc import ArcRPC
+from rpc import ArcRPC, RPCError
 from decoder import classify_trade
 from market_data import DexScreenerClient
 from arcscan import ArcscanClient
@@ -55,7 +55,7 @@ class ArcSmartMoneyBot:
         self.rpc.sanity_check()
         head = self.rpc.block_number()
         saved_block = self.db.next_block()
-        next_block = (saved_block if saved_block is not None else head) if self.cfg.start_block.lower() == "latest" else int(self.cfg.start_block)
+        next_block = saved_block if saved_block is not None else (head if self.cfg.start_block.lower() == "latest" else int(self.cfg.start_block))
         log.info("Arc scanner V3 online | chain=%s | head=%s | wallets=%s", self.cfg.chain_id, head, len(self.watch))
         log.info("READ-ONLY + PAPER MODE. No private key, signer or broadcaster is present.")
         stop_check_at = 0.0
@@ -84,10 +84,15 @@ class ArcSmartMoneyBot:
                 time.sleep(self.cfg.poll_interval)
             except KeyboardInterrupt:
                 log.info("Stopped."); return
+            except RPCError as e:
+                log.warning("%s", e); time.sleep(2)
             except Exception as e:
                 log.exception("loop error: %s", e); time.sleep(2)
 
     def process_block(self, n: int):
+        # Persist work to retry, not completion. This also protects the first
+        # START_BLOCK=latest block when the process dies before any checkpoint.
+        self.db.begin_block(n)
         block = self.rpc.get_block(n, full_transactions=True)
         ts = int(block["timestamp"])
         if not getattr(self, "_clusters_restored", False):
@@ -95,7 +100,8 @@ class ArcSmartMoneyBot:
                 for prior in self.db.recent_runtime_events(ts-max(self.cfg.cluster_window_seconds,self.cfg.exit_cluster_window_seconds)):
                     self.clusters.add(prior)
             self._clusters_restored = True
-        participants = self.rpc.watched_participants(n, list(self.watch))
+        participants = (self.rpc.watched_participants(n, list(self.watch), block['hash'])
+                        if block.get('hash') is not None else self.rpc.watched_participants(n, list(self.watch)))
         for tx in block["transactions"]:
             tx_hash = Web3.to_hex(tx["hash"])
             wallets = set(participants.get(tx_hash.lower(), []))
@@ -105,6 +111,9 @@ class ArcSmartMoneyBot:
             if not wallets: continue
             if self.db.tx_seen(tx_hash): continue
             receipt = self.rpc.get_receipt(tx["hash"])
+            if block.get('hash') is not None and receipt.get('blockHash') != block['hash']:
+                provider = self.rpc.w3.provider
+                raise RPCError('eth_getTransactionReceipt', 'block_mismatch', 1, provider.label(provider.active))
             for wallet in sorted(wallets):
                 self.db.observe_wallet(wallet,tx_hash,n,ts)
                 if int(receipt["status"]) != 1: continue
@@ -112,6 +121,8 @@ class ArcSmartMoneyBot:
                 native_value = int(tx.get("value",0) or 0) if str(tx.get("from","")).lower()==wallet else 0
                 try:
                     detected = classify_trade(self.rpc,receipt,info.address,self.cfg.min_usdc_flow,native_value_wei=native_value)
+                except RPCError:
+                    raise
                 except Exception as exc:
                     raise RuntimeError(f"cannot decode {tx_hash}; block will retry") from exc
                 from decoder import SWAP_TOPICS, hex_value

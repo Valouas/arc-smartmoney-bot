@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import math
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
@@ -14,6 +15,9 @@ def _i(name: str, default: int) -> int:
 @dataclass(frozen=True)
 class Settings:
     rpc_url: str = os.getenv("ARC_RPC_URL", "https://rpc.arc-scan.org")
+    rpc_fallback_urls: tuple[str, ...] = tuple(u.strip() for u in os.getenv("ARC_RPC_FALLBACK_URLS", "").split(',') if u.strip())
+    rpc_requests_per_second: float = _f("ARC_RPC_REQUESTS_PER_SECOND", 2)
+    rpc_rate_limit_file: str = os.getenv("ARC_RPC_RATE_LIMIT_FILE", "data/rpc_rate_limit.sqlite3")
     chain_id: int = _i("ARC_CHAIN_ID", 5042)
     arcscan_api_url: str = os.getenv(
         "ARCSCAN_API_URL", "https://api.arc-scan.org/v1"
@@ -85,6 +89,8 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
     def __post_init__(self):
+        if not math.isfinite(self.rpc_requests_per_second) or self.rpc_requests_per_second <= 0:
+            raise ValueError("ARC_RPC_REQUESTS_PER_SECOND must be finite and positive")
         if (self.launch_discovery_pages < 1 or self.outcome_horizon_seconds < 1
                 or self.outcome_grace_seconds < 1 or self.identity_cache_seconds < 0
                 or not 1 <= self.identity_workers <= 8):

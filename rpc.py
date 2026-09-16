@@ -4,6 +4,7 @@ from functools import lru_cache
 from typing import Any
 import logging
 from dex_registry import TrustedDexRegistry
+from rpc_transport import RPCError, ResilientRPCProvider, SharedRateLimiter
 
 USDC_ERC20 = Web3.to_checksum_address("0x3600000000000000000000000000000000000000")
 NATIVE_MIRROR = Web3.to_checksum_address("0xfffffffffffffffffffffffffffffffffffffffe")
@@ -18,9 +19,11 @@ TRANSFER_TOPIC = Web3.to_hex(Web3.keccak(text="Transfer(address,address,uint256)
 
 class ArcRPC:
     def __init__(self, url: str, chain_id: int):
-        self.w3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 10}))
         self.chain_id = chain_id
         from config import SETTINGS
+        self.w3 = Web3(ResilientRPCProvider(url, chain_id,
+            SharedRateLimiter(SETTINGS.rpc_rate_limit_file, SETTINGS.rpc_requests_per_second),
+            SETTINGS.rpc_fallback_urls))
         self.dex_registry = TrustedDexRegistry(SETTINGS.trusted_dex_registry,chain_id)
         if not self.dex_registry.entries:
             logging.getLogger(__name__).warning("No reviewed DEX deployments configured; swaps remain research-only")
@@ -36,7 +39,7 @@ class ArcRPC:
     def get_block(self, number: int, full_transactions: bool = True):
         return self.w3.eth.get_block(number, full_transactions=full_transactions)
 
-    def watched_participants(self, block_number: int, wallets: list[str]):
+    def watched_participants(self, block_number: int, wallets: list[str], block_hash=None):
         # Indexed Transfer topics include ERC-20 and Arc's native mirror. Reading
         # both sides also finds relayed/smart-account actions absent from tx.from.
         result = {}
@@ -45,7 +48,9 @@ class ArcRPC:
             topics = ["0x"+"0"*24+w[2:].lower() for w in batch]
             for position in (1,2):
                 query = [TRANSFER_TOPIC,topics] if position==1 else [TRANSFER_TOPIC,None,topics]
-                for log in self.w3.eth.get_logs({"fromBlock":block_number,"toBlock":block_number,"topics":query}):
+                block_filter = ({"blockHash": Web3.to_hex(block_hash)} if block_hash is not None
+                                else {"fromBlock": block_number, "toBlock": block_number})
+                for log in self.w3.eth.get_logs({**block_filter, "topics":query}):
                     if len(log["topics"]) != 3: continue
                     addr = "0x"+Web3.to_hex(log["topics"][position])[-40:]
                     if addr.lower() in batch:
@@ -71,11 +76,15 @@ class ArcRPC:
         c = self.w3.eth.contract(address=addr, abi=ERC20_ABI)
         out = {"address": addr, "symbol": "?", "name": "?", "decimals": None, "total_supply": None}
         try: out["symbol"] = c.functions.symbol().call()
+        except RPCError: raise
         except Exception: pass
         try: out["name"] = c.functions.name().call()
+        except RPCError: raise
         except Exception: pass
         try: out["decimals"] = int(c.functions.decimals().call())
+        except RPCError: raise
         except Exception as exc: raise ValueError("token decimals unavailable") from exc
         try: out["total_supply"] = int(c.functions.totalSupply().call())
+        except RPCError: raise
         except Exception: pass
         return out

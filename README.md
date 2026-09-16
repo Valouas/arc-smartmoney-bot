@@ -194,3 +194,7 @@ signals. Legacy automatic promotions must be revalidated after migration.
 Install test dependencies with `pip install -r requirements-dev.txt` and run
 `python -m pytest -m "not network" -q`. Public network contract tests are opt-in:
 set `ARC_RUN_NETWORK=1` and run `python -m pytest -m network -v`.
+
+RPC throttling, bounded retries, verified fallbacks and exact PowerShell commands
+are described in [the RPC operations guide](docs/RPC_RESILIENCE.md).
+Use `python rpc_check.py` for a small read-only check of your configured RPC.
