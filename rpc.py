@@ -4,7 +4,7 @@ from functools import lru_cache
 from typing import Any
 import logging
 from dex_registry import TrustedDexRegistry
-from rpc_transport import RPCError, ResilientRPCProvider, SharedRateLimiter
+from rpc_transport import RPCError, ResilientRPCProvider, SharedRateLimiter, SharedComputeLimiter
 
 USDC_ERC20 = Web3.to_checksum_address("0x3600000000000000000000000000000000000000")
 NATIVE_MIRROR = Web3.to_checksum_address("0xfffffffffffffffffffffffffffffffffffffffe")
@@ -21,8 +21,12 @@ class ArcRPC:
     def __init__(self, url: str, chain_id: int):
         self.chain_id = chain_id
         from config import SETTINGS
+        limiter = (SharedComputeLimiter(SETTINGS.rpc_rate_limit_file,
+                       SETTINGS.rpc_requests_per_second, SETTINGS.rpc_compute_units_per_second)
+                   if SETTINGS.rpc_compute_units_per_second else
+                   SharedRateLimiter(SETTINGS.rpc_rate_limit_file, SETTINGS.rpc_requests_per_second))
         self.w3 = Web3(ResilientRPCProvider(url, chain_id,
-            SharedRateLimiter(SETTINGS.rpc_rate_limit_file, SETTINGS.rpc_requests_per_second),
+            limiter,
             SETTINGS.rpc_fallback_urls,
             fallback_limiter=SharedRateLimiter(
                 SETTINGS.rpc_rate_limit_file + '.fallback',

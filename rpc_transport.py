@@ -26,6 +26,15 @@ READ_METHODS = {
     'eth_getLogs', 'eth_getTransactionReceipt', 'eth_getTransactionByHash',
     'eth_getCode', 'eth_call', 'web3_clientVersion',
 }
+# Throughput CU, not monthly billing CU (eth_chainId costs 5 for throughput).
+# https://www.alchemy.com/docs/reference/compute-unit-costs
+ALCHEMY_THROUGHPUT_CU = {
+    'eth_chainId': 5, 'eth_blockNumber': 10,
+    'eth_getBlockByNumber': 20, 'eth_getBlockByHash': 20,
+    'eth_getLogs': 60, 'eth_getTransactionReceipt': 20,
+    'eth_getTransactionByHash': 20, 'eth_getCode': 20,
+    'eth_call': 26, 'web3_clientVersion': 20,
+}
 
 
 class RPCError(RuntimeError):
@@ -87,6 +96,47 @@ class SharedRateLimiter:
             db.commit()
         finally:
             db.close()
+
+
+class SharedComputeLimiter(SharedRateLimiter):
+    """Atomic request + CU budgets shared by all primary RPC workers.
+
+    A rolling one-second ledger avoids spending an entire ten-second allowance
+    in a burst. The inherited budget table retains cooldowns across restarts.
+    No reservation or lock is held while sleeping; every wakeup rechecks both.
+    """
+    def __init__(self, path, requests_per_second, compute_units_per_second, **kwargs):
+        if (not math.isfinite(compute_units_per_second)
+                or compute_units_per_second < max(ALCHEMY_THROUGHPUT_CU.values())):
+            raise ValueError('RPC compute units per second must be finite and at least 60')
+        super().__init__(path, requests_per_second, **kwargs)
+        self.compute_units_per_second = compute_units_per_second
+        with closing(self._connect()) as db:
+            db.execute('CREATE TABLE IF NOT EXISTS cu_usage (at REAL NOT NULL, cost INTEGER NOT NULL)')
+            db.commit()
+
+    def acquire(self, method):
+        cost = ALCHEMY_THROUGHPUT_CU[method]  # No unpriced method is permitted.
+        while True:
+            db = self._connect()
+            try:
+                db.execute('BEGIN IMMEDIATE')
+                now = self.clock()
+                db.execute('DELETE FROM cu_usage WHERE at <= ?', (now - 1,))
+                used, oldest = db.execute('SELECT COALESCE(SUM(cost),0), MIN(at) FROM cu_usage').fetchone()
+                row = db.execute('SELECT next_at FROM budget WHERE id=1').fetchone()
+                wait = max(0, (row[0] if row else now) - now)
+                if used + cost > self.compute_units_per_second:
+                    wait = max(wait, oldest + 1 - now, 0.000001)
+                if wait <= 0:
+                    db.execute('INSERT OR REPLACE INTO budget VALUES(1,?)', (now + self.interval,))
+                    db.execute('INSERT INTO cu_usage VALUES(?,?)', (now, cost))
+                    db.commit()
+                    return
+                db.commit()  # Keep pruning bounded even while the caller waits.
+            finally:
+                db.close()
+            self.sleep(wait)
 
 
 def retry_delay(attempt, retry_after=None):
@@ -245,7 +295,10 @@ class ResilientRPCProvider(JSONBaseProvider):
         request_id = json.loads(payload)['id']
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                limiter.acquire()
+                if isinstance(limiter, SharedComputeLimiter):
+                    limiter.acquire(method)
+                else:
+                    limiter.acquire()
             except (OSError, sqlite3.Error):
                 raise self._error(method, 'rate_limiter', attempt, index) from None
             retry_after = None

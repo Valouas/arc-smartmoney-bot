@@ -11,6 +11,7 @@ paper mode restent inchangés.
 ARC_RPC_URL=https://rpc.mainnet.arc.io
 ARC_RPC_FALLBACK_URLS=https://rpc.arc-scan.org
 ARC_RPC_REQUESTS_PER_SECOND=2
+ARC_RPC_COMPUTE_UNITS_PER_SECOND=0
 ARC_RPC_FALLBACK_REQUESTS_PER_SECOND=2
 ARC_RPC_RATE_LIMIT_FILE=data/rpc_rate_limit.sqlite3
 ARC_CHAIN_ID=5042
@@ -85,6 +86,38 @@ aussi consommé plus vite (30 millions de CU font environ 27,8 h à 300 CU/s con
 Le secours public reste limité à 2 appels/s même si d'autres processus utilisent
 encore Alchemy. Arrêtez puis relancez les quatre processus ensemble pour charger
 les mêmes limites et éviter de mélanger des versions du limiteur.
+
+Pour mieux utiliser ce même compte Alchemy à 300 CU/s, le mode pondéré permet :
+
+```dotenv
+ARC_RPC_REQUESTS_PER_SECOND=30
+ARC_RPC_COMPUTE_UNITS_PER_SECOND=300
+ARC_RPC_FALLBACK_REQUESTS_PER_SECOND=2
+```
+
+Les deux limites primary s'appliquent ensemble : **30 requêtes/s au maximum ET
+300 CU sur chaque fenêtre glissante d'une seconde**, partagés par tous les
+processus. Le contrôle et la réservation sont atomiques dans le même fichier
+SQLite. La table `cu_usage` ne contient que dates et coûts, sans adresses, clés
+ou URLs. Les tentatives échouées et les contrôles de chaîne comptent également.
+La réservation est conservée au redémarrage ; aucun verrou n'est tenu en attente.
+Le budget utilise les coûts de débit : chaîne 5 CU, numéro de bloc 10, bloc/reçu/
+transaction/code/version 20, `eth_call` 26, logs 60. Il refuse les méthodes sans
+coût explicite. Le barème doit être revérifié si Alchemy le modifie.
+
+Ce mode laisse donc passer jusqu'à 30 lectures de numéro de bloc, 15 blocs/reçus,
+11 `eth_call` ou 5 `getLogs` par seconde si ces méthodes sont utilisées seules.
+Il n'autorise pas 30 `getLogs` par seconde. Le paramètre CU vaut 0 par défaut
+(désactivé) pour préserver le comportement des RPC publics. Le secours conserve
+son propre budget de 2 requêtes/s. `Retry-After`, les trois tentatives, les
+validations de réponse et les checkpoints restent inchangés.
+
+Arrêtez et relancez tous les processus ensemble : une ancienne version ne comptabilise
+pas les CU. Une autre application utilisant le compte Alchemy consomme aussi son
+quota mais n'est pas comptée par ce fichier local. Le scanner reste séquentiel :
+si la latence réseau ou le traitement limite le débit, relever la limite ne suffit
+pas à atteindre ces maxima. Aucun gain de vitesse réel n'est garanti par ces seuls
+plafonds ; les tests virtuels vérifient l'utilisation du budget et ses limites.
 
 Les HTTP 429 déclenchent les trois tentatives habituelles puis le fallback.
 Alchemy documente aussi le quota mensuel épuisé comme HTTP 403, code JSON-RPC

@@ -17,6 +17,7 @@ class Settings:
     rpc_url: str = os.getenv("ARC_RPC_URL", "https://rpc.arc-scan.org")
     rpc_fallback_urls: tuple[str, ...] = tuple(u.strip() for u in os.getenv("ARC_RPC_FALLBACK_URLS", "").split(',') if u.strip())
     rpc_requests_per_second: float = _f("ARC_RPC_REQUESTS_PER_SECOND", 2)
+    rpc_compute_units_per_second: float = _f("ARC_RPC_COMPUTE_UNITS_PER_SECOND", 0)
     rpc_fallback_requests_per_second: float = _f("ARC_RPC_FALLBACK_REQUESTS_PER_SECOND", 2)
     rpc_rate_limit_file: str = os.getenv("ARC_RPC_RATE_LIMIT_FILE", "data/rpc_rate_limit.sqlite3")
     chain_id: int = _i("ARC_CHAIN_ID", 5042)
@@ -90,6 +91,9 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
     def __post_init__(self):
+        if (not math.isfinite(self.rpc_compute_units_per_second)
+                or (self.rpc_compute_units_per_second != 0 and self.rpc_compute_units_per_second < 60)):
+            raise ValueError("ARC_RPC_COMPUTE_UNITS_PER_SECOND must be 0 or finite and at least 60")
         if not math.isfinite(self.rpc_requests_per_second) or self.rpc_requests_per_second <= 0:
             raise ValueError("ARC_RPC_REQUESTS_PER_SECOND must be finite and positive")
         if not math.isfinite(self.rpc_fallback_requests_per_second) or self.rpc_fallback_requests_per_second <= 0:
