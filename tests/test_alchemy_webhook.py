@@ -43,8 +43,8 @@ def endpoint(tmp_path,cfg):
     path=tmp_path/'webhook.sqlite3'
     factory=lambda:SimpleNamespace(reload=lambda:None,items={W:WalletInfo(W,'seed',4,'seed')})
     servers=[]
-    def start(custom=None):
-        server=create_server(custom or cfg,path,factory,port=0)
+    def start(custom=None,paper_watch=None):
+        server=create_server(custom or cfg,path,factory,port=0,paper_watch_factory=paper_watch or (lambda:set()))
         thread=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.01})
         thread.start(); servers.append((server,thread))
         return server,path

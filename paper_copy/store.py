@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS fills(
  fee TEXT NOT NULL,gas TEXT NOT NULL,realized_pnl TEXT NOT NULL,quote TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS gaps(
  id TEXT PRIMARY KEY,block INTEGER NOT NULL,reason TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scanned_transactions(
+ tx_hash TEXT NOT NULL,wallet TEXT NOT NULL,block INTEGER NOT NULL,
+ PRIMARY KEY(tx_hash,wallet));
+CREATE TABLE IF NOT EXISTS webhook_triggers(
+ tx_hash TEXT NOT NULL,wallet TEXT NOT NULL,received_at INTEGER NOT NULL,
+ status TEXT NOT NULL DEFAULT 'PENDING',PRIMARY KEY(tx_hash,wallet));
 '''
 
 

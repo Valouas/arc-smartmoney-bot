@@ -111,6 +111,64 @@ indicatifs ne prouvent pas qu'une vente est executable sur un token illiquide.
 Aucune cle privee, signature, approbation de token, transaction de swap ou
 notification Telegram n'est ajoutee. Les seuls appels reseau lisent les donnees.
 
+## Webhook Alchemy et fallback RPC
+
+Avec `ALCHEMY_WEBHOOK_ENABLED=true`, le meme receiver signe peut maintenant
+alimenter le V4 et le paper-copy. Sa file `alchemy_paper_triggers` est distincte
+de celle du V4 : seuls les wallets de la selection historique valide et les
+wallets ayant encore des sorties/observations paper a traiter y sont routes.
+Cela ne promeut aucun WATCH/QUARANTINE et ne donne aucune autorite live au V4.
+
+Le paper-copy lit la base du receiver **en lecture seule**. Il importe les hints
+dans sa propre table `webhook_triggers` avec un curseur de lecture durable,
+independant des checkpoints blockchain. Il ne consomme pas `events` ou `signals`
+du V4 : leurs cours, leurs scores et leur portefeuille ne sont pas ceux de cette
+simulation. Les tables sont creees de facon additive au demarrage.
+
+Une notification reveille le scanner au prochain cycle local (2 secondes par
+defaut). Le scanner verifie les blocs avec les confirmations existantes, les
+recus complets et trusted DEX, puis appelle le moteur de remplissage existant.
+Il parcourt **tous les blocs depuis son checkpoint**, dans l'ordre. Il faut aussi
+retrouver les transactions dont Alchemy n'a pas envoye de notification : ignorer
+un transfert precedent pourrait fausser la proportion d'une vente.
+
+La notification ne remplace donc pas `eth_getLogs`, et ne permet pas de sauter
+un retard du scanner paper. Elle permet de limiter les sondages sans activite :
+un scan de secours a lieu au plus tard 15 secondes apres le dernier cycle acheve
+(hors duree des appels RPC). Pendant un rattrapage ou un trigger en attente,
+le scanner continue a chaque cycle local. Si la file est absente, illisible ou
+provient d'un ancien receiver, le polling RPC original reste actif.
+
+Les IDs de transaction/wallet sont persistants. Une transaction deja scannee,
+un doublon, une relivraison apres redemarrage ou un second passage du scanner ne
+cree pas de nouveau remplissage ni de changement de baseline. Les hints expires
+ne sont pas des ordres : le scanner de secours reste responsable de la couverture.
+Un transfert simple peut etre marque `SCANNED` sans aucun ordre paper.
+
+Le rapport `python -m paper_copy --status` affiche `webhook_triggers` avec
+`PENDING`, `SCANNED`, `EXPIRED` ou `IGNORED_NOT_WATCHED`. `SCANNED` signifie que la
+transaction a ete reconstruite, pas qu'un achat a ete execute. Le statut des
+observations et des fills indique le resultat de la simulation.
+
+Apres cette mise a jour, redemarrer le receiver via Ctrl+C puis `run_v4.py`, en
+gardant ngrok ouvert. Mettre a jour manuellement les adresses dans Alchemy avec :
+
+```powershell
+.\.venv\Scripts\python.exe alchemy_webhook.py --addresses
+# Sous-ensemble paper seulement, pour diagnostic :
+.\.venv\Scripts\python.exe alchemy_webhook.py --paper-addresses
+```
+
+Puis lancer le paper-copy separement avec la commande habituelle ci-dessous.
+Une selection vide affiche `QUALIFIED_WALLETS=0` et attend sans RPC ; aucun
+wallet n'est ajoute pour forcer un trade de demonstration.
+
+Options : `--no-webhook` conserve le polling original ; `--webhook-db chemin`
+change la source de triggers, sans pouvoir viser la base paper elle-meme. Si
+vous utilisez des chemins paper non standards, lancer le receiver avec
+`--paper-db chemin --paper-selection chemin` correspondants. Ces options ne
+changent pas les criteres de selection ni les hypotheses financieres de la base.
+
 ## Commandes PowerShell
 
 Dans une nouvelle fenetre, en laissant l'analyseur tourner :

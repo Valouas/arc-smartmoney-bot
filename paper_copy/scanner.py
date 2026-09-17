@@ -164,5 +164,9 @@ class Scanner:
                     prior.append(obs['source_usdc'])
                     self.db.execute('UPDATE wallets SET baseline=? WHERE wallet=?',(json.dumps(prior),obs['wallet']))
             self.db.executemany('INSERT OR IGNORE INTO gaps VALUES(?,?,?)',gaps)
+            # Persist coverage even for simple transfers / rejected swaps. The
+            # webhook can acknowledge a trigger without inventing a copy order.
+            self.db.executemany('INSERT OR IGNORE INTO scanned_transactions VALUES(?,?,?)',
+                [('0x'+tx_hash,wallet,number) for _,tx_hash,wallets,_,_ in receipts for wallet in wallets])
             self.store.set('last_hash',block_hash)
             self.store.set('next_block',number+1)

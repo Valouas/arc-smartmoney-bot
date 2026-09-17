@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS alchemy_jobs (
  tx_hash TEXT NOT NULL,wallet TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'PENDING',
  attempts INTEGER NOT NULL DEFAULT 0,next_attempt INTEGER NOT NULL DEFAULT 0,error TEXT,
  PRIMARY KEY(tx_hash,wallet));
+CREATE TABLE IF NOT EXISTS alchemy_paper_triggers (
+ tx_hash TEXT NOT NULL,wallet TEXT NOT NULL,received_at INTEGER NOT NULL,
+ PRIMARY KEY(tx_hash,wallet));
 '''
 
 
@@ -62,7 +65,7 @@ def parse(body):
         raise InvalidWebhook('Invalid Address Activity payload') from None
 
 
-def accept(db,body,watch,now=None):
+def accept(db,body,watch,now=None,paper_watch=None):
     event_id,items=parse(body)
     now=int(time.time()) if now is None else now
     digest=hashlib.sha256(body).hexdigest()
@@ -72,13 +75,16 @@ def accept(db,body,watch,now=None):
         previous=db.execute('SELECT body_digest FROM alchemy_deliveries WHERE event_id=?',(event_id,)).fetchone()
         if previous:
             if previous[0]!=digest: raise InvalidWebhook('Event ID reused with different body')
-            return {'accepted':True,'duplicate':True,'queued':0}
+            return {'accepted':True,'duplicate':True,'queued':0,'paper_queued':0}
         db.execute('INSERT INTO alchemy_deliveries VALUES(?,?,?)',(event_id,digest,now))
-        count=0
+        count=paper_count=0
         for tx,index,wallets,removed in items:
             db.execute('INSERT OR IGNORE INTO alchemy_items VALUES(?,?,?)',(event_id,tx,index))
             if removed: continue
             for wallet in set(wallets)&set(watch):
                 cur=db.execute('INSERT OR IGNORE INTO alchemy_jobs(tx_hash,wallet) VALUES(?,?)',(tx,wallet))
                 count+=cur.rowcount
-    return {'accepted':True,'duplicate':False,'queued':count}
+            for wallet in set(wallets)&set(paper_watch or ()):
+                cur=db.execute('INSERT OR IGNORE INTO alchemy_paper_triggers VALUES(?,?,?)',(tx,wallet,now))
+                paper_count+=cur.rowcount
+    return {'accepted':True,'duplicate':False,'queued':count,'paper_queued':paper_count}

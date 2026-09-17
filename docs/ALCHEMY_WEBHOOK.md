@@ -70,8 +70,10 @@ Configurer les adresses surveillees dans Alchemy a partir de :
 .\.venv\Scripts\python.exe alchemy_webhook.py --addresses
 ```
 
-Cette commande lit la watchlist effective du V4 : seed + generated + candidats
-QUARANTINE observes avec poids zero, dans la limite deja utilisee par le scanner.
+Cette commande fournit l'union de la watchlist effective du V4 (seed + generated
++ candidats QUARANTINE observes avec poids zero, dans la limite du scanner) et
+des wallets qualifies pour paper-copy / sorties de positions paper existantes.
+Pour obtenir uniquement la liste paper : `python alchemy_webhook.py --paper-addresses`.
 Les infrastructures DEX reviewed sont exclues. Ce fichier n'accorde pas d'autorite
 aux candidats. Les changements de liste doivent egalement etre reportes dans
 Alchemy ; il n'y a pas de synchronisation distante automatique ni de token de
@@ -91,12 +93,15 @@ gestion Alchemy stocke ici.
 
 ## Reprise, deduplication et traitement
 
-Trois tables additives dans la base V4 :
+Tables additives dans la base V4 :
 
 - `alchemy_deliveries` : ID d'evenement Alchemy (`id`, pas `webhookId`), digest,
   date de reception ; un ID reutilise avec un body different est refuse.
 - `alchemy_items` : event ID + transaction + log index, ou -1 si absent.
 - `alchemy_jobs` : transaction + wallet, statut PENDING/DONE/IGNORED et retry.
+- `alchemy_paper_triggers` : transaction + wallet + reception, pour le consommateur
+  paper independant. Un wallet qualifie paper uniquement n'entre pas pour autant
+  dans `alchemy_jobs` ou dans l'autorite du moteur V4.
 
 Les logs multiples d'un swap et les redeliveries ne multiplient pas les jobs.
 Le consommateur recupere ensuite le recu **complet** via RPC. Un log notifie ne
@@ -134,8 +139,10 @@ le recours eventuel a terminate/kill. Les appels RPC utilisent le quota partage
 existant ; la voie live est priorisee entre blocs, sans garantie de latence si
 un appel RPC est bloque ou si le budget est epuise.
 
-Ce changement alimente le moteur V4 demande. Le processus independant
-`python -m paper_copy` conserve son propre scanner et ses portefeuilles separes.
+Le processus independant `python -m paper_copy` lit les triggers paper en lecture
+seule et conserve son propre scanner ordonne et ses portefeuilles separes. Il doit
+etre lance dans une autre fenetre ; `run_v4.py` ne lance pas ce bot automatiquement.
+Voir [fonctionnement paper-copy](PAPER_COPY.md#webhook-alchemy-et-fallback-rpc).
 Aucun signer, aucune cle privee ni methode d'envoi de transaction n'est ajoute.
 
 ## Verification

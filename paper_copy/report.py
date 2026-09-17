@@ -29,11 +29,13 @@ def report(path):
         orders = {r[0]:r[1] for r in db.execute('SELECT status,COUNT(*) FROM observations GROUP BY status')}
         reasons = {r[0]:r[1] for r in db.execute('SELECT reason,COUNT(*) FROM observations WHERE reason IS NOT NULL GROUP BY reason')}
         gaps = db.execute('SELECT COUNT(*) FROM gaps').fetchone()[0]
+        tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        webhook={r[0]:r[1] for r in db.execute('SELECT status,COUNT(*) FROM webhook_triggers GROUP BY status')} if 'webhook_triggers' in tables else {}
     print('PAPER COPY | 100% simulation | prix de remplissage modelises, aucun ordre reel')
     print('Wallet | Cash USDC | PnL realise | Cout positions ouvertes | PnL prudent (solde ouvert nul) | Achats/Ventes')
     for r in rows:
         print(f"{r['wallet']} | {float(r['cash']):.2f} | {float(r['realized_pnl']):+.2f} | "
               f"{float(r['open_cost']):.2f} | {float(r['cash_only_pnl']):+.2f} | {r['buys']}/{r['sells']}")
     print('Valorisation des positions ouvertes: inconnue; elles ne sont pas declarees sans perte.')
-    print(json.dumps({'wallets':len(rows),'progress':progress,'observations':orders,'reasons':reasons,'reconstruction_gaps':gaps}))
+    print(json.dumps({'wallets':len(rows),'progress':progress,'observations':orders,'reasons':reasons,'reconstruction_gaps':gaps,'webhook_triggers':webhook}))
     return rows

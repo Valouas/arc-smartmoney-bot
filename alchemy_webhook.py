@@ -13,6 +13,7 @@ from config import SETTINGS
 from storage import Storage
 from watchlist_manager import WatchlistManager, effective_watchlist
 from webhook_queue import SCHEMA, MAX_BODY, accept, InvalidWebhook
+from paper_copy.webhook import watch_addresses as paper_watch_addresses
 
 
 class WebhookServer(ThreadingHTTPServer):
@@ -37,7 +38,8 @@ class WebhookServer(ThreadingHTTPServer):
         print('Alchemy webhook request failed',flush=True)
 
 
-def create_server(cfg=SETTINGS,db_path='data/arc_bot.sqlite3',watch_factory=WatchlistManager,port=None):
+def create_server(cfg=SETTINGS,db_path='data/arc_bot.sqlite3',watch_factory=WatchlistManager,port=None,
+                  paper_watch_factory=None):
     if cfg.chain_id!=5042: raise ValueError('Alchemy webhook requires Arc chain 5042')
     storage=Storage(db_path)
     storage.db.executescript(SCHEMA); storage.db.close()
@@ -84,7 +86,8 @@ def create_server(cfg=SETTINGS,db_path='data/arc_bot.sqlite3',watch_factory=Watc
                 db=sqlite3.connect(db_path,timeout=1)
                 try:
                     watch=effective_watchlist(watch_factory(),db,cfg)
-                    result=accept(db,body,watch)
+                    paper_watch=(paper_watch_factory() if paper_watch_factory else paper_watch_addresses(cfg))
+                    result=accept(db,body,watch,paper_watch=paper_watch)
                 finally: db.close()
                 self.reply(200,result)  # Durable acceptance, not synchronous RPC work.
             except InvalidWebhook:
@@ -100,13 +103,19 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--db',default='data/arc_bot.sqlite3')
     parser.add_argument('--addresses',action='store_true',help='Print effective wallet addresses for the Alchemy dashboard, without network calls')
+    parser.add_argument('--paper-addresses',action='store_true',help='Print only qualified paper wallets and existing exits')
+    parser.add_argument('--paper-db',default='data/paper_copy.sqlite3')
+    parser.add_argument('--paper-selection',default='data/historical_selection.json')
     args=parser.parse_args()
+    paper_watch=lambda:paper_watch_addresses(SETTINGS,args.paper_selection,args.paper_db)
+    if args.paper_addresses:
+        print(json.dumps({'addresses':sorted(paper_watch())},indent=2)); return
     if args.addresses:
         db=sqlite3.connect(Path(args.db).resolve().as_uri()+'?mode=ro',uri=True,timeout=10)
-        try: print(json.dumps({'addresses':sorted(effective_watchlist(WatchlistManager(),db,SETTINGS))},indent=2))
+        try: print(json.dumps({'addresses':sorted(set(effective_watchlist(WatchlistManager(),db,SETTINGS))|paper_watch())},indent=2))
         finally: db.close()
         return
-    server=create_server(db_path=args.db)
+    server=create_server(db_path=args.db,paper_watch_factory=paper_watch)
     print('Alchemy webhook listening | port='+str(SETTINGS.alchemy_webhook_port),flush=True)
     try: server.serve_forever(poll_interval=.25)
     except KeyboardInterrupt: pass

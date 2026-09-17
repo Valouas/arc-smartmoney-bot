@@ -19,7 +19,8 @@ proportional sells. It is not started by `run_v4.py`. See
 
 **Optional Alchemy Address Activity ingress:** `ALCHEMY_WEBHOOK_ENABLED=true`
 adds a local receiver to `run_v4.py`. Signed notifications queue live triggers
-for the existing V4 engine without moving backfill checkpoints. See
+for the existing V4 engine and wake the independent `paper_copy` scanner for
+qualified wallets, without moving either checkpoint from webhook data. See
 [webhook setup and ngrok commands](docs/ALCHEMY_WEBHOOK.md).
 
 The core rule is deliberately conservative:

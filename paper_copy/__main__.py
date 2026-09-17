@@ -14,6 +14,7 @@ from .report import report
 from .scanner import Scanner, ChainConsistencyError
 from .selection import load_selection, SelectionError
 from .store import Store
+from .webhook import LiveWakeup
 
 
 def main(argv=None):
@@ -23,6 +24,8 @@ def main(argv=None):
     parser.add_argument('--policy',help='JSON simulation assumptions; frozen for each database')
     parser.add_argument('--once',action='store_true')
     parser.add_argument('--status',action='store_true',help='Read-only balances, orders and checkpoint; no RPC')
+    parser.add_argument('--webhook-db',default='data/arc_bot.sqlite3',help='Read-only signed webhook inbox; enabled by ALCHEMY_WEBHOOK_ENABLED')
+    parser.add_argument('--no-webhook',action='store_true',help='Use the original RPC polling only')
     args = parser.parse_args(argv)
     if args.status: report(args.db); return 0
     policy = Policy(**json.loads(Path(args.policy).read_text(encoding='utf-8-sig'))) if args.policy else Policy()
@@ -35,6 +38,8 @@ def main(argv=None):
             if store.get('halt_reason'):
                 print('PAPER COPY HALTED | prior chain inconsistency requires review')
                 return 2
+            wakeup=LiveWakeup(store,args.webhook_db,policy) if SETTINGS.alchemy_webhook_enabled and not args.no_webhook else None
+            if wakeup: print('PAPER COPY | webhook triggers enabled | ordered RPC verification + periodic fallback',flush=True)
             while True:
                 now = int(time.time())
                 try:
@@ -45,6 +50,12 @@ def main(argv=None):
                 # Expiration/removal blocks buys while preserving exit tracking.
                 if not selected:
                     with store.db: store.db.execute('UPDATE wallets SET active=0')
+                else:
+                    # Removal takes effect even when RPC is temporarily unavailable.
+                    with store.db:
+                        for row in store.db.execute('SELECT wallet FROM wallets WHERE active=1').fetchall():
+                            if row[0] not in selected:
+                                store.db.execute('UPDATE wallets SET active=0 WHERE wallet=?',(row[0],))
                 if status != previous_status:
                     print(status,flush=True); previous_status = status
                 try:
@@ -59,10 +70,18 @@ def main(argv=None):
                     if rpc is not None and needs_rpc:
                         scanner = Scanner(store,rpc,policy,SETTINGS)
                         execution = Execution(store,policy,market)
-                        blocks = scanner.cycle(selected,on_block=lambda: execution.pending(int(time.time())))
+                        due=(wakeup.due(selected,set(selected)|set(scanner.watched()),now) if wakeup else True)
+                        blocks=0
+                        if due or args.once:
+                            blocks = scanner.cycle(selected,on_block=lambda: execution.pending(int(time.time())))
+                            if wakeup:
+                                wakeup.refresh(set(scanner.watched()),int(time.time()))
+                                wakeup.scanned(selected,blocks,int(time.time()))
                         execution.pending(int(time.time()))
-                        print('PAPER COPY | blocks='+str(blocks)+' | next='+str(store.get('next_block')),flush=True)
+                        if due or args.once:
+                            print('PAPER COPY | blocks='+str(blocks)+' | next='+str(store.get('next_block')),flush=True)
                     else:
+                        if wakeup: wakeup.refresh(set(),now)
                         Execution(store,policy,None).pending(now)
                 except ChainConsistencyError:
                     with store.db: store.set('halt_reason','CHAIN_CONSISTENCY_REQUIRES_REVIEW')

@@ -48,6 +48,9 @@ if 'alchemy_jobs' in tables:
     for row in db.execute('SELECT status,COUNT(*) count FROM alchemy_jobs GROUP BY status'):
         print(dict(row))
     print('Accepted deliveries:',db.execute('SELECT COUNT(*) FROM alchemy_deliveries').fetchone()[0])
+    if 'alchemy_paper_triggers' in tables:
+        print('Paper-copy triggers (consumer status: python -m paper_copy --status):',
+              db.execute('SELECT COUNT(*) FROM alchemy_paper_triggers').fetchone()[0])
 if "alert_outbox" in tables:
     for r in db.execute("SELECT state,COUNT(*) count FROM alert_outbox GROUP BY state"):
         print(dict(r))

@@ -26,6 +26,7 @@ NOW=100000
 def cfg(tmp_path,monkeypatch):
     monkeypatch.setattr('paper_copy.scanner.time.time',lambda:NOW)
     return replace(Settings(),trusted_dex_registry=str(tmp_path/'registry.json'),
+                   alchemy_webhook_enabled=False,
                    rpc_url='https://rpc.example.test',rpc_fallback_urls=(),
                    telegram_bot_token='',telegram_chat_id='')
 
