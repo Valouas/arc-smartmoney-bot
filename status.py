@@ -30,9 +30,17 @@ if "scanner_state" in tables:
     print("Scanner checkpoint next_block:",state.get('next_block'))
     print("Scanner pending block (not completed):",state.get('pending_block'))
 if 'historical_runs' in tables:
+    from historical_store import VERSION
     print('\n=== HISTORICAL COLLECTION (separate from forward promotion) ===')
-    for row in db.execute('SELECT phase,COUNT(*) count FROM historical_runs GROUP BY phase'):
+    for row in db.execute('''WITH wallets AS (
+        SELECT wallet FROM discovery_candidates UNION SELECT wallet FROM wallet_profiles)
+        SELECT CASE WHEN r.wallet IS NULL OR r.version<>? THEN 'EN ATTENTE'
+                    WHEN r.phase='COMPLETE' THEN 'ANALYSE' ELSE 'EN ANALYSE' END AS analysis,
+               COUNT(*) count FROM wallets w LEFT JOIN historical_runs r ON r.wallet=w.wallet
+        GROUP BY analysis''', (VERSION,)):
         print(dict(row))
+    print('Historical decoded / identified transactions:', tuple(db.execute(
+        'SELECT COUNT(payload),COUNT(*) FROM historical_transactions').fetchone()))
     print('Historical pending transactions:', db.execute('SELECT COUNT(*) FROM historical_transactions WHERE payload IS NULL').fetchone()[0])
     print('Ranking: python wallet_ranking.py --historical --top 20')
 if "alert_outbox" in tables:

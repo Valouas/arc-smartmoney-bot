@@ -1,6 +1,7 @@
 """Resumable, fair historical reconstruction independent of scanner checkpoints."""
 import json
 import time
+from collections import deque
 from decimal import Decimal
 
 from arcscan import ArcscanError, require_complete_history
@@ -169,12 +170,30 @@ class HistoricalCollector:
 
     def cycle(self):
         now = int(time.time())
-        rows = self.db.execute('''SELECT c.wallet FROM discovery_candidates c
+        rows = self.db.execute('''SELECT c.wallet,r.version,r.phase FROM discovery_candidates c
             LEFT JOIN historical_runs r ON r.wallet=c.wallet
             WHERE r.wallet IS NULL OR r.version<>? OR r.phase<>'COMPLETE' OR r.completed_at<=?
             ORDER BY COALESCE(r.last_attempt,0),c.first_discovered_at,c.wallet''',
             (VERSION, now-self.cfg.historical_refresh_seconds)).fetchall()
-        selected = [r[0] for r in rows if not is_dex_infrastructure(r[0], self.cfg)][:self.cfg.discovery_max_wallets_per_cycle]
+        queues = {name: deque() for name in ('DECODING', 'FETCHING', 'START')}
+        for row in rows:
+            if is_dex_infrastructure(row['wallet'], self.cfg): continue
+            group = row['phase'] if row['version'] == VERSION and row['phase'] in ('DECODING', 'FETCHING') else 'START'
+            queues[group].append(row['wallet'])
+        # Two decoding slots, one pagination slot, one start/refresh slot.
+        # Persist the rotation so even a one-wallet cycle and restarts are fair.
+        # Within each queue, least recently attempted wins, including failures.
+        pattern = ('DECODING', 'FETCHING', 'DECODING', 'START')
+        slot = self.db.execute('SELECT next_slot FROM historical_scheduler WHERE singleton=1').fetchone()[0]
+        selected = []
+        for _ in range(self.cfg.discovery_max_wallets_per_cycle):
+            preferred = pattern[slot]
+            group = next((g for g in (preferred, 'DECODING', 'FETCHING', 'START') if queues[g]), None)
+            if group is None: break
+            slot = (slot+1) % len(pattern)
+            selected.append(queues[group].popleft())
+        with self.db:
+            self.db.execute('UPDATE historical_scheduler SET next_slot=? WHERE singleton=1', (slot,))
         completed = errors = 0
         for wallet in selected:
             try: self.step(wallet, now); completed += 1

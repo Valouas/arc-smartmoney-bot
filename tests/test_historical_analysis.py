@@ -7,7 +7,7 @@ import pytest
 
 from arcscan import ArcscanError
 from config import Settings
-from historical_metrics import analyze, qualify
+from historical_metrics import analyze, qualify, performance_stage
 from historical_store import initialize
 from historical_collector import HistoricalCollector, parse_page
 from historical_report import build_report, publish
@@ -23,6 +23,8 @@ NOW = 100000
 @pytest.fixture
 def cfg(tmp_path):
     return replace(Settings(), trusted_dex_registry=str(tmp_path/'registry.json'),
+                   rpc_url='https://rpc.example.test', rpc_fallback_urls=(),
+                   telegram_bot_token='', telegram_chat_id='',
                    historical_analysis_enabled=True, historical_transactions_per_step=1)
 
 
@@ -129,7 +131,8 @@ def test_single_winner_and_few_trades_stay_followed(cfg):
     p=analyze([trade(1,'BUY',1000),trade(2,'SELL',10000)],cfg)
     c,reasons=qualify(p,{'version':1,'phase':'COMPLETE','cutoff_at':NOW},
                       {'eligible':True,'independent_profitable_deployers':2},False,cfg,NOW)
-    assert c=='PROMISING' and 'profit_concentrated_in_one_position' in reasons
+    assert c=='WATCH' and 'profit_concentrated_in_one_position' in reasons
+    assert performance_stage(p,cfg)=='PRELIMINARY_POSITIVE'
 
 
 @pytest.mark.parametrize('mutation', [
@@ -320,3 +323,153 @@ def test_incoming_funding_does_not_create_unknown_gas_for_recipient(store,cfg):
     c.rpc.get_receipt=lambda _:r
     payload=c.transaction(W,H,{'cutoff_block':100})
     assert payload['gas_usdc']=='0' and not payload['trades'] and not payload['inventory_gap']
+
+
+def seed_run(store, wallet, phase='DECODING', payloads=(), version=1, error=None):
+    store.upsert_discovery_candidate(wallet,T,1)
+    store.db.execute('''INSERT INTO historical_runs
+        (wallet,version,started_at,cutoff_block,cutoff_at,cutoff_hash,phase,last_attempt,error)
+        VALUES(?,?,?,100,?,'hash',?,?,?)''', (wallet,version,NOW,NOW,phase,NOW,error))
+    for payload in payloads:
+        store.db.execute('INSERT INTO historical_transactions VALUES(?,?,?)',
+                         (wallet,payload['tx_hash'],json.dumps(payload)))
+    store.db.commit()
+
+
+@pytest.mark.parametrize('limit', [1,4])
+def test_scheduler_balances_decoding_pagination_and_new_wallets_across_restarts(store,cfg,monkeypatch,limit):
+    cfg=replace(cfg,discovery_max_wallets_per_cycle=limit)
+    wallets=['0x'+f'{n:040x}' for n in range(10,18)]
+    for wallet,phase in zip(wallets, ['DECODING']*4+['FETCHING']*2):
+        seed_run(store,wallet,phase)
+    for wallet in wallets[6:]: store.upsert_discovery_candidate(wallet,T,1)
+    clock=iter(range(NOW+1,NOW+100))
+    monkeypatch.setattr('historical_collector.time.time',lambda: next(clock))
+    seen=[]
+    def step(wallet,now):
+        row=store.db.execute('SELECT phase FROM historical_runs WHERE wallet=?',(wallet,)).fetchone()
+        seen.append((wallet,row[0] if row else 'START'))
+        if row:
+            with store.db:
+                store.db.execute('UPDATE historical_runs SET last_attempt=? WHERE wallet=?',(now,wallet))
+        else:
+            # Failure remains in the start/refresh queue, behind other new wallets.
+            raise ArcscanError('transient')
+    for _ in range(8//limit):
+        c=fake_collector(store,cfg)  # Reinitialize exactly as a restarted worker does.
+        c.step=step
+        c.cycle()
+    assert [phase for _,phase in seen]==['DECODING','FETCHING','DECODING','START']*2
+    assert len({w for w,p in seen if p=='DECODING'})==4
+    assert len({w for w,p in seen if p=='FETCHING'})==2
+    assert len({w for w,p in seen if p=='START'})==2
+    assert len({w for w,_ in seen})==8
+
+
+def test_ready_history_finishes_before_starting_every_new_wallet(store,cfg):
+    cfg=replace(cfg,discovery_max_wallets_per_cycle=2)
+    c=fake_collector(store,cfg); c.step(W,NOW)
+    for n in range(10,30): store.upsert_discovery_candidate('0x'+f'{n:040x}',T,1)
+    c.transaction=Mock(return_value=trade(1,'BUY',1)); c.identity=Mock(return_value={})
+    result=c.cycle()
+    assert result=={'wallet_steps':2,'incomplete_steps':0}
+    assert store.db.execute('SELECT phase FROM historical_runs WHERE wallet=?',(W,)).fetchone()[0]=='COMPLETE'
+    assert store.db.execute('SELECT COUNT(*) FROM historical_runs').fetchone()[0]==2
+    assert store.db.execute('SELECT COUNT(*) FROM discovery_candidates').fetchone()[0]==21
+
+
+def test_failed_decoding_rotates_without_losing_transactions(store,cfg,monkeypatch):
+    cfg=replace(cfg,discovery_max_wallets_per_cycle=1)
+    c=fake_collector(store,cfg); c.step(W,NOW)
+    store.upsert_discovery_candidate(W2,T,1); c.step(W2,NOW)
+    c.transaction=Mock(side_effect=ArcscanError('outage'))
+    monkeypatch.setattr('historical_collector.time.time',lambda: NOW+1)
+    assert c.cycle()['incomplete_steps']==1
+    c=fake_collector(store,cfg)
+    c.transaction=Mock(return_value=trade(1,'BUY',1)); c.identity=Mock(return_value={})
+    c.cycle()
+    assert store.db.execute('SELECT payload FROM historical_transactions WHERE wallet=?',(W,)).fetchone()[0] is None
+    assert store.db.execute('SELECT phase FROM historical_runs WHERE wallet=?',(W2,)).fetchone()[0]=='COMPLETE'
+    assert store.db.execute('SELECT COUNT(*) FROM historical_transactions').fetchone()[0]==2
+
+
+def test_pending_report_uses_null_metrics_and_explains_waiting(store,cfg,tmp_path,capsys):
+    rows=build_report(store.path,cfg,NOW)
+    r=rows[0]
+    assert r['analysis_status']=='WAITING' and r['performance_stage']=='NOT_EVALUATED'
+    assert r['metrics_status']=='UNAVAILABLE' and not r['qualification_evaluated']
+    assert r['buys'] is None and r['gross_realized_pnl_usdc'] is None
+    assert r['transactions_queued']==r['transactions_decoded']==0
+    assert r['decoding_progress_pct'] is None and r['report_reasons']==['analysis_pending']
+    publish(rows,cfg,tmp_path,now=NOW)
+    console=capsys.readouterr().out
+    assert 'EN ATTENTE' in console and 'N/D' in console
+    assert 'insufficient_buys' not in console
+    saved=json.loads((tmp_path/'historical_wallet_ranking.json').read_text())
+    assert saved['wallets'][0]['buys'] is None
+    import csv
+    with (tmp_path/'historical_wallet_ranking.csv').open(encoding='utf-8-sig',newline='') as stream:
+        assert next(csv.DictReader(stream))['buys']==''
+
+
+def test_partial_decoding_shows_progress_without_classifying_performance(store,cfg):
+    seed_run(store,W,payloads=evidence(cfg))
+    with store.db:
+        store.db.execute('INSERT INTO historical_transactions VALUES(?,?,NULL)',(W,H))
+    r=build_report(store.path,cfg,NOW)[0]
+    assert r['analysis_status']=='IN_PROGRESS' and r['metrics_status']=='PARTIAL'
+    assert r['historical_class']=='WATCH' and r['performance_stage']=='NOT_EVALUATED'
+    assert r['buys']==8 and r['transactions_decoded']==16 and r['transactions_pending']==1
+    assert r['decoding_progress_pct']==pytest.approx(1600/17)
+    assert not r['qualification_evaluated'] and not r['paper_selection_eligible']
+    assert r['report_reasons']==['analysis_in_progress']
+
+
+@pytest.mark.parametrize('phase,version,expected', [('FETCHING',1,'IN_PROGRESS'),('DECODING',0,'WAITING')])
+def test_progress_not_presented_as_complete_while_fetching_or_invalidated(store,cfg,phase,version,expected):
+    seed_run(store,W,phase,payloads=evidence(cfg),version=version)
+    r=build_report(store.path,cfg,NOW)[0]
+    assert r['analysis_status']==expected and r['decoding_progress_pct'] is None
+    assert r['performance_stage']=='NOT_EVALUATED' and not r['paper_selection_eligible']
+    if version==0: assert r['buys'] is None and r['metrics_status']=='UNAVAILABLE'
+
+
+def test_completed_empty_snapshot_has_real_zero_metrics(store,cfg):
+    seed_run(store,W,'COMPLETE')
+    r=build_report(store.path,cfg,NOW)[0]
+    assert r['analysis_status']=='ANALYZED' and r['data_complete']
+    assert r['buys']==0 and r['gross_realized_pnl_usdc']==0
+    assert r['decoding_progress_pct']==100 and r['performance_stage']=='NO_CLOSED_POSITION'
+    assert 'insufficient_buys' in r['report_reasons']
+
+
+def test_report_distinguishes_first_gain_from_repeated_positive_evidence(store,cfg,tmp_path,capsys):
+    seed_run(store,W,'COMPLETE',payloads=[trade(1,'BUY',100),trade(2,'SELL',112.42)])
+    seed_run(store,W2,'COMPLETE',payloads=evidence(cfg))
+    rows=build_report(store.path,cfg,NOW)
+    by_wallet={r['wallet']:r for r in rows}
+    assert by_wallet[W]['historical_class']=='WATCH'
+    assert by_wallet[W]['performance_stage']=='PRELIMINARY_POSITIVE'
+    assert by_wallet[W2]['historical_class']=='PROMISING'
+    assert by_wallet[W2]['performance_stage']=='REPEATED_POSITIVE'
+    assert not any(r['paper_selection_eligible'] or r['live_signal_authority'] for r in rows)
+    contract=publish(rows,cfg,tmp_path,now=NOW)
+    assert not contract['wallets']
+    assert 'PREMIER RESULTAT POSITIF' in capsys.readouterr().out
+    assert store.db.execute('SELECT COUNT(*) FROM discovery_candidates').fetchone()[0]==2
+
+
+def test_gross_profit_eaten_by_gas_is_not_a_positive_performance(cfg):
+    p=analyze([trade(1,'BUY',100,gas=10),trade(2,'SELL',112,gas=10)],cfg)
+    assert p['gross_realized_pnl_usdc']>0
+    assert performance_stage(p,cfg)=='NO_NET_PROFIT'
+    assert qualify(p,{'version':1,'phase':'COMPLETE','cutoff_at':NOW},{},False,cfg,NOW)[0]=='WATCH'
+
+
+def test_reconstruction_errors_are_not_reported_as_valid_zero_metrics(store,cfg):
+    seed_run(store,W,'COMPLETE',payloads=[{'tx_hash':H,'error':'unsupported_or_ambiguous_reconstruction'}])
+    r=build_report(store.path,cfg,NOW)[0]
+    assert r['analysis_status']=='ANALYZED' and not r['data_complete']
+    assert r['metrics_status']=='UNAVAILABLE' and r['buys'] is None
+    assert r['performance_stage']=='NOT_EVALUATED' and not r['paper_selection_eligible']
+    assert 'unsupported_or_ambiguous_reconstruction' in r['report_reasons']

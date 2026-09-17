@@ -118,18 +118,9 @@ def analyze(transactions, cfg):
             'period_start': start, 'period_end': end, 'issues': sorted(issues)}
 
 
-def qualify(metrics, run, identity, excluded, cfg, now):
-    reasons = list(metrics['issues'])
-    if excluded: reasons.append('dex_infrastructure_excluded')
-    if not run or run.get('phase') != 'COMPLETE' or run.get('version') != 1:
-        reasons.append('historical_snapshot_incomplete')
-    if run and run.get('error'): reasons.append('historical_collection_error')
-    if not run or not 0 <= now-run.get('cutoff_at', 0) <= cfg.historical_max_age_hours*3600:
-        reasons.append('historical_snapshot_stale')
-    if not identity.get('eligible'): reasons.append('identity_unknown_or_shared_service')
-    if identity.get('independent_profitable_deployers', 0) < cfg.promotion_min_winners:
-        reasons.append('insufficient_independent_profitable_tokens')
-    if identity.get('unknown_profitable_deployers', 0): reasons.append('profitable_deployer_identity_unknown')
+def performance_reasons(metrics, cfg):
+    """Existing performance requirements, shared by qualification and reporting."""
+    reasons = []
     if metrics['buys'] < cfg.promotion_min_launch_buys: reasons.append('insufficient_buys')
     if metrics['closed_positions'] < cfg.profile_min_evaluable_trades: reasons.append('insufficient_closed_positions')
     if len(metrics['profitable_tokens']) < cfg.promotion_min_winners: reasons.append('insufficient_profitable_tokens')
@@ -137,7 +128,31 @@ def qualify(metrics, run, identity, excluded, cfg, now):
     if metrics['closed_evidence_span_seconds'] < cfg.historical_period_hours*3600: reasons.append('evidence_period_too_short')
     if metrics['conservative_pnl_usdc'] <= 0: reasons.append('conservative_profit_not_positive')
     if metrics['concentration_risk'] == 'HIGH': reasons.append('profit_concentrated_in_one_position')
+    return reasons
+
+
+def performance_stage(metrics, cfg):
+    if not metrics['closed_positions']: return 'NO_CLOSED_POSITION'
+    if metrics['realized_less_all_observed_gas_usdc'] <= 0: return 'NO_NET_PROFIT'
+    if not metrics['issues'] and not performance_reasons(metrics, cfg): return 'REPEATED_POSITIVE'
+    return 'PRELIMINARY_POSITIVE'
+
+
+def qualify(metrics, run, identity, excluded, cfg, now):
+    reasons = list(metrics['issues']) + performance_reasons(metrics, cfg)
+    if excluded: reasons.append('dex_infrastructure_excluded')
+    complete = bool(run and run.get('phase') == 'COMPLETE' and run.get('version') == 1)
+    if not complete: reasons.append('historical_snapshot_incomplete')
+    if run and run.get('error'): reasons.append('historical_collection_error')
+    if not run or not 0 <= now-run.get('cutoff_at', 0) <= cfg.historical_max_age_hours*3600:
+        reasons.append('historical_snapshot_stale')
+    if not identity.get('eligible'): reasons.append('identity_unknown_or_shared_service')
+    if identity.get('independent_profitable_deployers', 0) < cfg.promotion_min_winners:
+        reasons.append('insufficient_independent_profitable_tokens')
+    if identity.get('unknown_profitable_deployers', 0): reasons.append('profitable_deployer_identity_unknown')
     # No raw hit-rate cutoff, no rejection for few trades or weak sizing.
+    # PROMISING is descriptive only, now reserved for repeated positive evidence.
     category = ('EXCLUDED' if excluded else 'HISTORICALLY_QUALIFIED' if not reasons else
-                'PROMISING' if metrics['gross_realized_pnl_usdc'] > 0 else 'WATCH')
+                'PROMISING' if complete and not run.get('error')
+                and performance_stage(metrics, cfg) == 'REPEATED_POSITIVE' else 'WATCH')
     return category, sorted(set(reasons))

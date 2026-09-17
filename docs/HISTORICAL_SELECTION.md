@@ -23,8 +23,9 @@ reconstruction sequentielle ; il ne conditionne pas la qualification historique.
 
 ## Collecte et completude
 
-Deux tables additives, `historical_runs` et `historical_transactions`, conservent
-un snapshot versionne par wallet. Les anciens `history_complete=1` ne suffisent
+Les tables additives `historical_runs` et `historical_transactions` conservent
+un snapshot versionne par wallet ; `historical_scheduler` persiste la rotation
+de travail, sans toucher aux checkpoints du scanner. Les anciens `history_complete=1` ne suffisent
 pas : leur collecte utilisait le seuil de 25 USDC. Une nouvelle collecte est
 necessaire, y compris pour les wallets precedemment complets.
 
@@ -37,8 +38,17 @@ necessaire, y compris pour les wallets precedemment complets.
   creent pas de trades supplementaires. Un curseur cyclique ou une ligne sans
   hash bloque le passage sans faire avancer le curseur.
 - Jusqu'a `HISTORICAL_TRANSACTIONS_PER_STEP=10` transactions reconstruites par
-  wallet et passage. La rotation persistante evite qu'un wallet difficile
-  monopolise les premieres places. Les transports echoues restent a reprendre.
+  wallet et passage. La rotation reserve deux passages a la reconstruction,
+  un a la pagination en cours et un aux nouveaux snapshots/rafraichissements,
+  puis recommence. Si une file est vide, sa place va a une autre file active.
+  Le maximum de wallets par cycle reste `DISCOVERY_MAX_WALLETS_PER_CYCLE`.
+  Dans chaque file, le wallet tente le moins recemment passe en premier, meme
+  apres une erreur. La rotation persiste entre cycles et redemarrages, y compris
+  avec un seul wallet par cycle. Aucun wallet n'est traite deux fois par cycle.
+  Cela termine des historiques sans attendre une premiere page de tous les
+  nouveaux wallets. Ce partage porte sur les passages, pas sur un nombre egal
+  de requetes : les limitations RPC/Arcscan restent actives et inchangees.
+  Les transports echoues restent a reprendre, sans perdre leurs transactions.
 - Seuil de collecte historique 1e-18 USDC : les petits achats/ventes positifs sont
   conserves. Le seuil des signaux live reste inchange.
 - Meme decodeur, preuves trusted DEX et exigences de reconstruction. Les transferts
@@ -114,9 +124,42 @@ La qualification exige :
 - Contribution maximale d'une position de 80 % (`HISTORICAL_MAX_CONCENTRATION=0.8`).
 
 Ces criteres historiques sont distincts des anciens scores forward, qui ne sont
-ni abaisses ni presentes comme des preuves historiques. `PROMISING` peut signaler
-un resultat realise positif encore incomplet ; les raisons restent affichees.
-Ce statut ne donne pas droit a la selection automatique.
+ni abaisses ni presentes comme des preuves historiques. La qualification
+`HISTORICALLY_QUALIFIED` garde exactement ces exigences.
+
+Le reporting separe maintenant trois dimensions :
+
+- `analysis_status` : `WAITING` (EN ATTENTE), `IN_PROGRESS` (EN ANALYSE),
+  `ANALYZED` (ANALYSE). Un snapshot invalide doit recommencer et revient en attente.
+- `metrics_status` : `UNAVAILABLE`, `PARTIAL`, `INCOMPLETE` ou `COMPLETE`.
+  Des transactions examinees peuvent contenir des lacunes ; ANALYSE ne signifie
+  donc pas automatiquement donnees completes ni qualification.
+- `performance_stage` : `NOT_EVALUATED` pendant la collecte ; apres analyse,
+  `NO_CLOSED_POSITION`, `NO_NET_PROFIT`, `PRELIMINARY_POSITIVE` ou
+  `REPEATED_POSITIVE`. Une premiere performance positive apres gas reste
+  preliminaire tant que les exigences de repetition, volume de preuves,
+  resultat prudent et concentration ci-dessus ne sont pas satisfaites.
+
+Un gain isole de 12 dollars est ainsi `WATCH / PRELIMINARY_POSITIVE`, pas une
+preuve de rentabilite reguliere. `PROMISING` est desormais reserve aux snapshots
+termines sans erreur de collecte, avec une performance `REPEATED_POSITIVE`
+sans lacunes de reconstruction. Il peut encore manquer des controles d'identite
+ou de fraicheur pour la qualification. C'est uniquement une etiquette de rapport :
+aucun seuil moteur, statut discovery ou droit de signal n'est change. Tous les
+wallets WATCH restent suivis, y compris ceux avec pertes ou peu de trades.
+
+Sans transactions exploitables, les metriques sont `null` en JSON, cellules
+vides en CSV et `N/D` en console. Un historique termine et reellement vide conserve
+de vrais zeros. Les metriques partielles restent marquees `PARTIAL`, sans
+evaluation de performance. Le rapport affiche les transactions identifiees,
+reconstruites et restantes. Le pourcentage de reconstruction n'est disponible
+qu'apres la fin de pagination : avant cela, le nombre final de hashes est inconnu.
+
+`report_reasons` explique l'attente/collecte pour un snapshot non termine ; les
+insuffisances de performance ne sont affichees qu'apres analyse. Les raisons
+techniques de qualification restent dans `blocking_reasons`, avec
+`qualification_evaluated=false` tant que l'analyse n'est pas terminee.
+Le resume distingue l'avancement, la qualite des donnees et la performance.
 
 ## Exports et contrat du second bot
 
