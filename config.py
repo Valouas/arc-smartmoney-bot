@@ -57,6 +57,13 @@ class Settings:
     intelligence_reload_seconds: int = _i("INTELLIGENCE_RELOAD_SECONDS", 30)
 
     discovery_poll_seconds: int = _i("DISCOVERY_POLL_SECONDS", 60)
+    historical_analysis_enabled: bool = os.getenv('HISTORICAL_ANALYSIS_ENABLED', 'false').lower() == 'true'
+    historical_transactions_per_step: int = _i('HISTORICAL_TRANSACTIONS_PER_STEP', 10)
+    historical_refresh_seconds: int = _i('HISTORICAL_REFRESH_SECONDS', 21600)
+    historical_max_age_hours: int = _i('HISTORICAL_MAX_AGE_HOURS', 48)
+    historical_period_hours: int = _i('HISTORICAL_PERIOD_HOURS', 6)
+    historical_min_profitable_periods: int = _i('HISTORICAL_MIN_PROFITABLE_PERIODS', 2)
+    historical_max_concentration: float = _f('HISTORICAL_MAX_CONCENTRATION', 0.8)
     discovery_early_buyers: int = _i("DISCOVERY_EARLY_BUYERS", 50)
     discovery_transfer_pages: int = _i("DISCOVERY_TRANSFER_PAGES", 20)
     discovery_activity_pages: int = _i("DISCOVERY_ACTIVITY_PAGES", 20)
@@ -91,6 +98,11 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
     def __post_init__(self):
+        if (min(self.historical_transactions_per_step, self.historical_refresh_seconds,
+                self.historical_max_age_hours, self.historical_period_hours,
+                self.historical_min_profitable_periods) < 1
+                or not 0 < self.historical_max_concentration <= 1):
+            raise ValueError('Invalid historical analysis settings')
         if (not math.isfinite(self.rpc_compute_units_per_second)
                 or (self.rpc_compute_units_per_second != 0 and self.rpc_compute_units_per_second < 60)):
             raise ValueError("ARC_RPC_COMPUTE_UNITS_PER_SECOND must be 0 or finite and at least 60")

@@ -9,14 +9,16 @@ COMMANDS=[
 ]
 
 def main():
+    from config import SETTINGS
+    commands = COMMANDS + ([[sys.executable, 'historical_analysis.py']] if SETTINGS.historical_analysis_enabled else [])
     procs=[]
     try:
-        for cmd in COMMANDS:
+        for cmd in commands:
             print("starting:"," ".join(cmd))
             procs.append(subprocess.Popen(cmd))
             time.sleep(1)
         while True:
-            for p,cmd in zip(procs,COMMANDS):
+            for p,cmd in zip(procs,commands):
                 rc=p.poll()
                 if rc is not None:
                     raise RuntimeError(f"{cmd[-1]} exited with code {rc}")

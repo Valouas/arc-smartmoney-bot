@@ -3,6 +3,14 @@
 V4 extends the V3 launch universe and wallet intelligence system with automatic
 smart-wallet discovery.
 
+**Historical analyzer mode:** set `HISTORICAL_ANALYSIS_ENABLED=true` to collect
+complete wallet histories independently of scanner lag, rank realized FIFO
+results, and export `HISTORICALLY_QUALIFIED` wallets for a separate paper bot.
+This adds a fifth resumable worker and replaces auto-discovery's forward-dependent
+qualification in this mode. It does not grant runtime trading authority.
+See [historical selection and consumer contract](docs/HISTORICAL_SELECTION.md).
+Use `python wallet_ranking.py --historical --top 20` for this ranking.
+
 The core rule is deliberately conservative:
 
 **Seeing a wallet early on one winner is not enough to add it to the trading

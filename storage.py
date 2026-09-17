@@ -134,7 +134,17 @@ class Storage:
         self._transaction_depth = 0
         self.db = sqlite3.connect(path, timeout=10)
         self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL")
+        # journal_mode changes can return SQLITE_BUSY immediately when several
+        # workers initialize a legacy database, despite connect(timeout=10).
+        for attempt in range(5):
+            try:
+                self.db.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                if str(exc) not in {'database is locked', 'database table is locked'} or attempt == 4:
+                    self.db.close()
+                    raise
+                time.sleep(0.05 * 2**attempt)
         self.db.execute("PRAGMA busy_timeout=10000")
         self.db.executescript(SCHEMA + V4_SCHEMA)
         self._migrate()

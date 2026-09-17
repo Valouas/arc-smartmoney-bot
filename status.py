@@ -29,6 +29,12 @@ if "scanner_state" in tables:
     state={r['key']:r['value'] for r in db.execute("SELECT key,value FROM scanner_state")}
     print("Scanner checkpoint next_block:",state.get('next_block'))
     print("Scanner pending block (not completed):",state.get('pending_block'))
+if 'historical_runs' in tables:
+    print('\n=== HISTORICAL COLLECTION (separate from forward promotion) ===')
+    for row in db.execute('SELECT phase,COUNT(*) count FROM historical_runs GROUP BY phase'):
+        print(dict(row))
+    print('Historical pending transactions:', db.execute('SELECT COUNT(*) FROM historical_transactions WHERE payload IS NULL').fetchone()[0])
+    print('Ranking: python wallet_ranking.py --historical --top 20')
 if "alert_outbox" in tables:
     for r in db.execute("SELECT state,COUNT(*) count FROM alert_outbox GROUP BY state"):
         print(dict(r))

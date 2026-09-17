@@ -296,6 +296,7 @@ def write_cluster_report(rows, path, top=None, policy=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--historical', action='store_true', help='Historical realized-PnL ranking and paper selection')
     parser.add_argument("--top", type=int, help="Limit console rows only; CSV and summary include everyone")
     parser.add_argument("--db", default="data/arc_bot.sqlite3")
     parser.add_argument("--csv", default="data/wallet_ranking.csv")
@@ -312,6 +313,13 @@ def main(argv=None):
         parser.error('--per-cluster must be positive')
     if args.diverse and args.clusters:
         parser.error('--diverse applies to wallet rows, not --clusters')
+    if args.historical:
+        if args.clusters:
+            parser.error('--historical exposes identity clusters in wallet rows; use --diverse')
+        from historical_report import build_report, publish
+        rows = build_report(args.db, SETTINGS)
+        publish(rows, SETTINGS, Path(args.csv).parent, args.top, args.diverse)
+        return 0
     try:
         rows = build_ranking(args.db, watchlist_path=args.watchlist, history_path=args.history)
         if args.clusters:

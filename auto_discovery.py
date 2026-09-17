@@ -250,7 +250,13 @@ class AutoDiscovery:
         write_json("generated_watchlist.json", payload)
 
     def cycle(self):
-        w=self.detect_winners(); c=self.discover_from_winners(); h=self.hydrate_candidates(); p=self.promote_candidates()
+        w=self.detect_winners(); c=self.discover_from_winners()
+        # The dedicated historical worker owns resumable research in this mode.
+        # Historical qualification is exported separately, never into runtime authority.
+        if self.cfg.historical_analysis_enabled:
+            log.info('historical mode: winners=%s sources=%s; historical worker handles qualification', w, c)
+            return
+        h=self.hydrate_candidates(); p=self.promote_candidates()
         log.info("cycle winners=%s sources=%s hydrated=%s promoted=%s",w,c,h,p)
 
     def run(self):
