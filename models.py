@@ -32,6 +32,7 @@ class TradeEvent:
     sizing: dict = field(default_factory=dict)
     identity_known: Optional[bool] = None
     identity_cluster_size: Optional[int] = None
+    transaction_index: Optional[int] = None
 
 @dataclass
 class MarketSnapshot:

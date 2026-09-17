@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -96,8 +96,14 @@ class Settings:
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
+    alchemy_webhook_enabled: bool = os.getenv('ALCHEMY_WEBHOOK_ENABLED', 'false').lower() == 'true'
+    alchemy_webhook_host: str = os.getenv('ALCHEMY_WEBHOOK_HOST', '127.0.0.1')
+    alchemy_webhook_port: int = _i('ALCHEMY_WEBHOOK_PORT', 8000)
+    alchemy_webhook_signing_key: str = field(default=os.getenv('ALCHEMY_WEBHOOK_SIGNING_KEY', ''),repr=False)
 
     def __post_init__(self):
+        if not 1 <= self.alchemy_webhook_port <= 65535:
+            raise ValueError('Invalid webhook port')
         if (min(self.historical_transactions_per_step, self.historical_refresh_seconds,
                 self.historical_max_age_hours, self.historical_period_hours,
                 self.historical_min_profitable_periods) < 1

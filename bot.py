@@ -18,7 +18,7 @@ from proposal_queue import ProposalQueue
 from formatting import buy_opportunity_text
 from identity_graph import IdentityRefresher
 from intelligence_book import IntelligenceBook
-from watchlist_manager import WatchlistManager
+from watchlist_manager import WatchlistManager, effective_watchlist
 from alert_outbox import AlertOutbox
 from process_lock import ProcessLock
 from wallet_policy import is_dex_infrastructure
@@ -46,6 +46,14 @@ class ArcSmartMoneyBot:
         self.identity_refresher = IdentityRefresher(self.arcscan,self.cfg.identity_cache_seconds,self.cfg.identity_workers)
         self.identities = self.identity_refresher.current
         self.clusters = ClusterBook(self.cfg.cluster_window_seconds, self.cfg.exit_cluster_window_seconds)
+        self.webhooks = None
+        if self.cfg.alchemy_webhook_enabled:
+            from webhook_consumer import WebhookConsumer
+            self.webhooks = WebhookConsumer(self)
+
+    def refresh_watch(self):
+        self.watch = effective_watchlist(self.watch_manager,self.db.db,self.cfg)
+        self.identities = self.identity_refresher.poll(list(self.watch),self.cfg.watchlist_reload_seconds)
 
     def run(self):
         with ProcessLock(self.db.path + ".scanner.lock"):
@@ -63,21 +71,16 @@ class ArcSmartMoneyBot:
         stop_check_at = 0.0
         while True:
             try:
-                self.watch_manager.reload()
-                self.watch = dict(self.watch_manager.items)
-                # Candidates are observed prospectively with zero authority. They
-                # cannot need promotion in order to collect promotion evidence.
-                candidates=[r for r in self.db.db.execute("SELECT wallet FROM discovery_candidates WHERE status='QUARANTINE' ORDER BY first_discovered_at")
-                            if not is_dex_infrastructure(r['wallet'],self.cfg)]
-                for row in candidates[:self.cfg.promotion_max_wallets]:
-                    addr=Web3.to_checksum_address(row["wallet"])
-                    self.watch.setdefault(addr.lower(),WalletInfo(addr,"quarantine",0,"quarantine"))
-                self.identities = self.identity_refresher.poll(list(self.watch),self.cfg.watchlist_reload_seconds)
+                self.refresh_watch()
+                if self.webhooks: self.webhooks.drain()
                 head = self.rpc.block_number()
                 while next_block <= head:
                     self.process_block(next_block)
                     next_block += 1
                     self.outbox.flush(limit=2)
+                    if self.webhooks:
+                        self.refresh_watch()
+                        self.webhooks.drain()
                 if time.time() >= stop_check_at:
                     for x in self.paper.evaluate_stops(self.market):
                         msg = f"🧪 {x['action']} {x['symbol']} | PnL {x['pnl_usd']:+.2f}$ | {x['reason']}"
@@ -103,7 +106,7 @@ class ArcSmartMoneyBot:
         ts = int(block["timestamp"])
         if not getattr(self, "_clusters_restored", False):
             if hasattr(self, "clusters"):
-                for prior in self.db.recent_runtime_events(ts-max(self.cfg.cluster_window_seconds,self.cfg.exit_cluster_window_seconds)):
+                for prior in self.db.recent_runtime_events(ts-max(self.cfg.cluster_window_seconds,self.cfg.exit_cluster_window_seconds),until=ts):
                     if is_dex_infrastructure(prior.wallet,self.cfg): continue
                     self.clusters.add(prior)
             self._clusters_restored = True
@@ -121,43 +124,64 @@ class ArcSmartMoneyBot:
             if block.get('hash') is not None and receipt.get('blockHash') != block['hash']:
                 provider = self.rpc.w3.provider
                 raise RPCError('eth_getTransactionReceipt', 'block_mismatch', 1, provider.label(provider.active))
-            for wallet in sorted(wallets):
-                self.db.observe_wallet(wallet,tx_hash,n,ts)
-                if int(receipt["status"]) != 1: continue
-                info = self.watch[wallet]
-                native_value = int(tx.get("value",0) or 0) if str(tx.get("from","")).lower()==wallet else 0
-                try:
-                    detected = classify_trade(self.rpc,receipt,info.address,self.cfg.min_usdc_flow,native_value_wei=native_value)
-                except RPCError:
-                    raise
-                except Exception as exc:
-                    raise RuntimeError(f"cannot decode {tx_hash}; block will retry") from exc
-                from decoder import SWAP_TOPICS, hex_value
-                has_swap=any(log.get("topics") and hex_value(log["topics"][0]) in SWAP_TOPICS for log in receipt.get("logs",[]))
-                ambiguous=any(not d["confirmation_eligible"] for d in detected) or (has_swap and not detected)
-                if ambiguous:
-                    self.db.db.execute("INSERT OR REPLACE INTO reconstruction_gaps VALUES(?,?,?,?)",(wallet,tx_hash,"unsupported_or_untrusted_flow",ts))
-                    self.db.commit()
-                for d in detected:
-                    intel = self.intelligence.effective(info.address,0,info.weight)
-                    e = TradeEvent(
-                        tx_hash=tx_hash,block_number=n,timestamp=ts,wallet=info.address,
-                        wallet_label=info.label,wallet_weight=intel["weight"],trade_verified=d["confirmation_eligible"],
-                        side=d["side"],token=d["token"],token_symbol=d["symbol"],
-                        token_amount=d["token_amount"],usdc_amount=d["usdc_amount"],
-                        identity_id=self.identities.identity_id(info.address),reputation_score=intel["score"],
-                        identity_known=self.identities.eligible(info.address),
-                        intelligence_class=intel["class"],confirmation_eligible=(intel["eligible"] and d["confirmation_eligible"]
-                            and self.identities.eligible(info.address) and self.db.wallet_eligible(info.address)))
-                    if self.db.event_processed(e): continue
-                    self.handle_event(e)
+            self.process_transaction(tx,receipt,wallets,n,ts)
             self.db.mark_tx(tx_hash,n,ts)
         with self.db.transaction():
             for wallet in self.watch: self.db.mark_wallet_coverage(wallet,n,ts)
             self.db.checkpoint(n+1)
 
+    def process_transaction(self, tx, receipt, wallets, n, ts, live=False):
+        """Common decoder/engine path; webhook calls never mark a scanner transaction complete."""
+        tx_hash = Web3.to_hex(tx["hash"])
+        for wallet in sorted(wallets):
+            self.db.observe_wallet(wallet,tx_hash,n,ts)
+            if int(receipt["status"]) != 1: continue
+            info = self.watch[wallet]
+            native_value = int(tx.get("value",0) or 0) if str(tx.get("from","")).lower()==wallet else 0
+            try:
+                detected = classify_trade(self.rpc,receipt,info.address,self.cfg.min_usdc_flow,native_value_wei=native_value)
+            except RPCError:
+                raise
+            except Exception as exc:
+                raise RuntimeError(f"cannot decode {tx_hash}; block will retry") from exc
+            from decoder import SWAP_TOPICS, hex_value
+            has_swap=any(log.get("topics") and hex_value(log["topics"][0]) in SWAP_TOPICS for log in receipt.get("logs",[]))
+            ambiguous=any(not d["confirmation_eligible"] for d in detected) or (has_swap and not detected)
+            if ambiguous:
+                self.db.db.execute("INSERT OR REPLACE INTO reconstruction_gaps VALUES(?,?,?,?)",(wallet,tx_hash,"unsupported_or_untrusted_flow",ts))
+                self.db.commit()
+            for d in detected:
+                if live and not d["confirmation_eligible"]: continue
+                intel = self.intelligence.effective(info.address,0,info.weight)
+                e = TradeEvent(
+                    tx_hash=tx_hash,block_number=n,timestamp=ts,wallet=info.address,
+                    transaction_index=receipt.get('transactionIndex'),
+                    wallet_label=info.label,wallet_weight=intel["weight"],trade_verified=d["confirmation_eligible"],
+                    side=d["side"],token=d["token"],token_symbol=d["symbol"],
+                    token_amount=d["token_amount"],usdc_amount=d["usdc_amount"],
+                    identity_id=self.identities.identity_id(info.address),reputation_score=intel["score"],
+                    identity_known=self.identities.eligible(info.address),
+                    intelligence_class=intel["class"],confirmation_eligible=(intel["eligible"] and d["confirmation_eligible"]
+                        and self.identities.eligible(info.address) and self.db.wallet_eligible(info.address)))
+                if self.db.event_processed(e): continue
+                self.handle_event(e)
+
     def handle_event(self, event: TradeEvent):
         if is_dex_infrastructure(event.wallet,self.cfg): return
+        if self.db.event_processed(event): return
+        if getattr(self.cfg,'alchemy_webhook_enabled',False):
+            # Live and backfill interleave: rebuild only evidence at or before
+            # this event. Never give an old signal knowledge of future buys.
+            self.clusters = ClusterBook(self.cfg.cluster_window_seconds,self.cfg.exit_cluster_window_seconds)
+            cutoff=event.timestamp-max(self.cfg.cluster_window_seconds,self.cfg.exit_cluster_window_seconds)
+            priors=sorted(self.db.recent_runtime_events(cutoff,until=event.timestamp),
+                          key=lambda e:(e.timestamp,e.block_number,e.transaction_index if e.transaction_index is not None else -1))
+            for prior in priors:
+                earlier = prior.block_number < event.block_number or (
+                    prior.block_number == event.block_number and prior.transaction_index is not None
+                    and event.transaction_index is not None and prior.transaction_index < event.transaction_index)
+                if earlier and prior.timestamp <= event.timestamp and not is_dex_infrastructure(prior.wallet,self.cfg):
+                    self.clusters.add(prior)
         event.sizing = {}
         if event.side == 'BUY' and event.confirmation_eligible and event.trade_verified:
             # Observational metadata cannot affect safety gates or interrupt

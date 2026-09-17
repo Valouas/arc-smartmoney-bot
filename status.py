@@ -43,6 +43,11 @@ if 'historical_runs' in tables:
         'SELECT COUNT(payload),COUNT(*) FROM historical_transactions').fetchone()))
     print('Historical pending transactions:', db.execute('SELECT COUNT(*) FROM historical_transactions WHERE payload IS NULL').fetchone()[0])
     print('Ranking: python wallet_ranking.py --historical --top 20')
+if 'alchemy_jobs' in tables:
+    print('\n=== ALCHEMY WEBHOOK QUEUE ===')
+    for row in db.execute('SELECT status,COUNT(*) count FROM alchemy_jobs GROUP BY status'):
+        print(dict(row))
+    print('Accepted deliveries:',db.execute('SELECT COUNT(*) FROM alchemy_deliveries').fetchone()[0])
 if "alert_outbox" in tables:
     for r in db.execute("SELECT state,COUNT(*) count FROM alert_outbox GROUP BY state"):
         print(dict(r))

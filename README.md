@@ -17,6 +17,11 @@ It sizes buys between 10 and 100 USDC relative to prior median buys and copies
 proportional sells. It is not started by `run_v4.py`. See
 [paper-copy setup, assumptions and commands](docs/PAPER_COPY.md).
 
+**Optional Alchemy Address Activity ingress:** `ALCHEMY_WEBHOOK_ENABLED=true`
+adds a local receiver to `run_v4.py`. Signed notifications queue live triggers
+for the existing V4 engine without moving backfill checkpoints. See
+[webhook setup and ngrok commands](docs/ALCHEMY_WEBHOOK.md).
+
 The core rule is deliberately conservative:
 
 **Seeing a wallet early on one winner is not enough to add it to the trading

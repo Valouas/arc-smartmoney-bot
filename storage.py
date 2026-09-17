@@ -217,10 +217,11 @@ class Storage:
                         (e.tx_hash.lower(),e.wallet.lower(),e.token.lower(),e.side,e.timestamp,json.dumps(asdict(e))))
         self.commit()
 
-    def recent_runtime_events(self, cutoff):
+    def recent_runtime_events(self, cutoff, until=None):
         from models import TradeEvent
         return [TradeEvent(**json.loads(r[0])) for r in self.db.execute(
-            "SELECT payload FROM runtime_events WHERE timestamp>=? ORDER BY timestamp,rowid", (cutoff,))]
+            "SELECT payload FROM runtime_events WHERE timestamp>=? AND timestamp<=? ORDER BY timestamp,rowid",
+            (cutoff,9223372036854775807 if until is None else until))]
 
     def observe_wallet(self, wallet, tx_hash, block, timestamp):
         self.db.execute("INSERT OR IGNORE INTO wallet_activity VALUES(?,?,?,?)",
