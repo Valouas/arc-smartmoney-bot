@@ -11,6 +11,12 @@ qualification in this mode. It does not grant runtime trading authority.
 See [historical selection and consumer contract](docs/HISTORICAL_SELECTION.md).
 Use `python wallet_ranking.py --historical --top 20` for this ranking.
 
+**Separate live paper-copy bot:** `python -m paper_copy` consumes that expiring
+selection with an independent database and a virtual 1,000 USDC account per wallet.
+It sizes buys between 10 and 100 USDC relative to prior median buys and copies
+proportional sells. It is not started by `run_v4.py`. See
+[paper-copy setup, assumptions and commands](docs/PAPER_COPY.md).
+
 The core rule is deliberately conservative:
 
 **Seeing a wallet early on one winner is not enough to add it to the trading

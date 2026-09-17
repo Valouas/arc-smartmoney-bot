@@ -1,0 +1,140 @@
+# Bot de copie paper independant
+
+Ce processus observe les nouveaux trades des wallets qualifies. Il est distinct
+du scanner historique et du paper trader historique existant : son portefeuille,
+ses positions, ses ordres et son checkpoint sont dans `data/paper_copy.sqlite3`.
+Il ne modifie pas la base de l'analyseur et n'est pas ajoute a `run_v4.py`.
+Le code commun de transport RPC et de preuve trusted DEX reste reutilise.
+
+## Regles confirmees
+
+- 1 000 USDC virtuels independants par wallet. Avec 5 wallets, la simulation a
+  5 portefeuilles de 1 000 USDC, pas un portefeuille partage de 1 000 USDC.
+- Achat habituel : 50 USDC. Formule :
+  `budget = clamp(50 * achat_source / mediane_achats_precedents, 10, 100)`.
+  Un achat 2x plus gros que la mediane donne 100, et un achat 5x plus petit donne 10.
+- La mediane provient de `buy_details` de l'export historique lors de l'activation,
+  puis des achats source verifies observes avant le nouveau trade. Le trade courant
+  n'entre pas dans sa propre reference. Le rafraichissement de selection ne remplace
+  pas cette reference par un historique qui pourrait inclure des observations futures.
+- Moins de 5 achats exploitables : 10 USDC et confiance LOW ; de 5 a 9 : MEDIUM ;
+  a partir de 10 : HIGH. La qualification actuelle devrait deja fournir au moins
+  8 achats. Ce fallback ne donne aucune autorite a un wallet non qualifie.
+- Le budget de 10 a 100 inclut les frais et le gas simules. Si le cash restant
+  est inferieur au budget, le debit est reduit a ce cash, mais jamais sous 10 USDC.
+  Sinon l'achat est ignore explicitement. Aucun emprunt ni rechargement automatique.
+- Ventes proportionnelles : si le wallet source vend 25 % de sa quantite avant
+  transaction, le paper vend 25 % de sa propre position copiee. Un solde source
+  au bloc precedent, corrige des transferts anterieurs du meme bloc, donne cette
+  proportion. Le RPC doit pouvoir lire ce solde historique recent.
+- Les achats repetes du meme token s'ajoutent a la position du meme portefeuille.
+  Les ventes deduisent leur part du cout d'acquisition. Aucun stop-loss/take-profit.
+  Les transferts et airdrops ne sont pas des achats/ventes a copier. Le modele de
+  proportion suppose des soldes ERC-20 representes par les evenements Transfer ;
+  les tokens a rebase/reflection atypiques ne sont pas modelises avec precision.
+
+## Selection et retrait
+
+Source unique : `data/historical_selection.json`, produit par l'analyseur.
+Le consommateur controle version, chain ID 5042, finalite de l'analyse, completude,
+statut HISTORICALLY_QUALIFIED, expiration, identite eligible, unicite du cluster
+et exclusion des infrastructures DEX. Il n'ajoute ni WATCH ni PROMISING.
+
+Une liste vide ne cree aucun portefeuille et ne fait aucun appel RPC. Le processus
+reste en attente et relit le fichier toutes les 2 secondes. Un fichier absent,
+malforme ou expire desactive les nouveaux achats. Les positions paper existantes
+restent dans la base et les ventes de leurs wallets sont encore suivies pour
+permettre les sorties. Une selection rafraichie ne remet jamais le cash a 1 000.
+
+Le premier demarrage part du voisinage de la tete de chaine avec 2 confirmations.
+Un nouveau wallet n'est suivi qu'a partir du bloc suivant sa premiere activation.
+Un retour dans la selection, ou un renouvellement apres expiration, fixe egalement
+une nouvelle borne live pour les achats. Les anciens achats en attente ne sont
+pas remplis apres cette reactivation ; les positions et le suivi des sorties restent.
+Les positions source deja ouvertes ne sont pas achetees retroactivement. Apres
+une interruption, la reprise repart du checkpoint propre au paper, jamais de
+celui de l'analyseur. Les confirmations ne garantissent pas l'absence de reorg.
+
+## Prix, couts et donnees absentes
+
+Les remplissages sont une simulation, pas des devis de swap executables.
+Ils utilisent une nouvelle observation DexScreener apres detection du signal ;
+jamais le prix d'execution du wallet copie. Les schemas ne fournissent pas ici
+une garantie de fraicheur du prix de marche a la source. L'heure du fetch est
+enregistree. La latence de detection et les trades ignores sont visibles dans
+la base (`source_at`, `detected_at`, `filled_at`, `reason`).
+
+Hypotheses par defaut :
+
+- frais de swap : 30 bps (0,30 %) ;
+- slippage fixe : 50 bps (0,50 %), plus impact estime `notional / liquidite` ;
+- gas : 0,01 USDC par remplissage, une hypothese et non une mesure du futur gas ;
+- capacite : minimum de 0,1 % de la liquidite et 1 % du volume sur 5 minutes ;
+- prix, liquidite et volume doivent etre presents, finis et strictement positifs ;
+- delai maximal de copie : 60 secondes apres le bloc source.
+
+Sans prix/capacite exploitable, aucune execution fictive au prix source. Une
+cotation absente est retentee jusqu'a expiration. Une vente sans capacite attend
+egalement, puis devient ignoree si le signal expire ; sa position reste ouverte.
+Un achat trop gros pour la capacite est ignore. Les ordres suivants du meme wallet
+attendent un ordre precedent en attente pour conserver l'ordre et son allocation.
+Un signal trop ancien est enregistre comme ignore, jamais rempli retroactivement.
+
+Ces hypotheses sont configurables via `--policy chemin.json`, avec les champs
+de `paper_copy/policy.py`. Elles sont figees dans chaque base : changer les
+hypotheses demande une nouvelle base `--db`, pour ne pas melanger les experiences.
+Exemple de fichier JSON partiel : `{"fee_bps":"30","slippage_bps":"50","gas_usdc":"0.01"}`.
+
+## Quotas, reprise et limites
+
+Le bot utilise le RPC `.env` et son fallback, avec les retries et limites partages
+existants. Deux processus avec la meme cle partagent toujours le meme quota.
+Les recherches de transferts regroupent jusqu'a 40 blocs et 100 wallets par lot
+(2 eth_getLogs par lot/fenetre), puis reconstruisent dans l'ordre bloc/transaction.
+Les remplissages sont traites apres chaque bloc, sans attendre la fin de fenetre.
+Le debit reel depend du RPC, des wallets actifs et des cotations disponibles ;
+aucune garantie de rattrapage ou de latence n'est annoncee.
+
+Toutes les donnees requises d'un bloc sont recuperees avant d'enregistrer ses
+observations et son checkpoint dans une transaction SQLite. Un echec RPC conserve
+le bloc a retenter. Les observations et remplissages ont des identifiants uniques ;
+les reprises ne doivent ni dupliquer des achats ni recrediter le portefeuille.
+Les swaps ambigus/non verifies sont enregistres comme lacunes sans copie.
+Un hash de bloc incoherent arrete la simulation avec un motif persistant a faire
+examiner : un redemarrage ne masque pas une reorganisation deja detectee.
+
+Le reporting affiche cash, PnL realise, cout des positions ouvertes et PnL prudent
+si leur valeur residuelle etait nulle. Valeur de marche et PnL latent restent
+inconnus : une position non vendue ne disparait jamais du rapport. Les prix
+indicatifs ne prouvent pas qu'une vente est executable sur un token illiquide.
+
+Aucune cle privee, signature, approbation de token, transaction de swap ou
+notification Telegram n'est ajoutee. Les seuls appels reseau lisent les donnees.
+
+## Commandes PowerShell
+
+Dans une nouvelle fenetre, en laissant l'analyseur tourner :
+
+```powershell
+Set-Location "C:\Users\Valen\Desktop\bot\arc_smartmoney_bot\audit-issue-1"
+git pull --ff-only origin fix/issue-1-v4-audit
+.\.venv\Scripts\python.exe -m paper_copy
+```
+
+Etat du bot paper, sans reseau ni modification de sa base :
+
+```powershell
+.\.venv\Scripts\python.exe -m paper_copy --status
+```
+
+Un seul cycle pour diagnostic (ne pas lancer en parallele du worker sur la meme base) :
+
+```powershell
+.\.venv\Scripts\python.exe -m paper_copy --once
+```
+
+Tests du bot :
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_paper_copy.py -q
+```

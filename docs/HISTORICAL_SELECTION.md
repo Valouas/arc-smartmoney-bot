@@ -222,7 +222,8 @@ aucune autorisation. L'export annonce `purpose=historical_selection_for_paper`,
 `live_signal_authority=false`, `requires_consumer_validation=true`.
 
 Il ne remplit jamais `generated_watchlist.json`, `promoted_wallets` ou les profils
-forward et n'envoie aucune alerte Telegram. Le second bot n'est pas implemente ici.
+forward et n'envoie aucune alerte Telegram. Le consommateur paper independant
+est disponible via `python -m paper_copy` ; voir [sa documentation](PAPER_COPY.md).
 La rentabilite historique peut etre selectionnee pour le paper, jamais assimilee
 a une performance future garantie ou a une autorisation d'execution reelle.
 
