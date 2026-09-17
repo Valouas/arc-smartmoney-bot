@@ -26,7 +26,7 @@ def cfg():
 @pytest.mark.parametrize('history,webhook',[(False,False),(True,False),(False,True),(True,True)])
 def test_roles_match_v4_plus_separate_paper(cfg,history,webhook):
     cfg.historical_analysis_enabled=history; cfg.alchemy_webhook_enabled=webhook
-    assert run_all.roles_for(cfg)==[c[-1].removesuffix('.py') for c in commands_for(cfg)]+['paper_copy']
+    assert run_all.roles_for(cfg)==[c[-1].removesuffix('.py') for c in commands_for(cfg)]+['paper_copy','dashboard']
 
 
 def test_existing_manual_worker_prevents_any_new_start(local,cfg,monkeypatch):
@@ -54,7 +54,7 @@ def test_existing_tunnel_reused_and_not_stopped(local,cfg,monkeypatch):
     monkeypatch.setattr(run_all,'shutdown',stop)
     monkeypatch.setattr(run_all.time,'sleep',lambda _:run_all.STOP.write_text('stop'))
     run_all.supervise(cfg)
-    assert len(children)==7 and all('--worker' in c for c,_ in children)
+    assert len(children)==8 and all('--worker' in c for c,_ in children)
     assert set(stop.call_args.args[0])==set(run_all.roles_for(cfg))
     state=json.loads(run_all.STATE.read_text())
     assert state['status']=='STOPPED' and state['webhook_url'].startswith('https://example.')
@@ -71,13 +71,14 @@ def test_start_failure_shuts_down_only_already_created_children(local,cfg,monkey
     assert stop.call_args.args[0]=={'launch_indexer':p}
 
 
-def test_tunnel_or_receiver_failure_keeps_scanners(local,cfg,monkeypatch,capsys):
+@pytest.mark.parametrize('failed_role',['alchemy_webhook','dashboard'])
+def test_tunnel_or_receiver_failure_keeps_scanners(local,cfg,monkeypatch,capsys,failed_role):
     monkeypatch.setattr(run_all,'preflight',lambda _:None)
     monkeypatch.setattr(run_all,'prepare',lambda _:None)
     monkeypatch.setattr(run_all,'tunnel',lambda _:None)
     monkeypatch.setattr(run_all.shutil,'which',lambda _:None)
     def launch(command,path):
-        p=Mock(pid=1); p.poll.return_value=1 if command[-1]=='alchemy_webhook' else None
+        p=Mock(pid=1); p.poll.return_value=1 if command[-1]==failed_role else None
         return p
     monkeypatch.setattr(run_all,'launch',launch)
     monkeypatch.setattr(run_all,'shutdown',Mock())

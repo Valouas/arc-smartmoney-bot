@@ -10,6 +10,22 @@ Le lanceur regenere les exports historiques sans collecte reseau, puis demarre :
 - historical_analysis si HISTORICAL_ANALYSIS_ENABLED=true ;
 - alchemy_webhook si ALCHEMY_WEBHOOK_ENABLED=true ;
 - paper_copy avec la selection paper configuree par defaut.
+- dashboard sur http://127.0.0.1:8001 (lecture seule).
+
+`TABLEAU_DE_BORD.bat` ouvre le navigateur sur le tableau de bord. Le serveur est
+lance par `LANCER_BOT.bat` et arrete avec le reste. Il n'est pas expose par ngrok :
+le tunnel reste reserve au webhook sur le port 8000. Une panne du tableau de bord
+n'arrete pas les scanners.
+
+Le tableau de bord lit les deux bases en mode SQLite read-only, avec un cache de
+10 secondes, sans RPC ni modification des selections. Il presente les comptes
+paper, positions ouvertes, dernieres executions, courbe quotidienne du PnL realise,
+statuts moteur, progression historique et checkpoints. Les photos historiques
+proviennent du dernier CSV exporte et affichent sa date. Elles ne sont pas
+recalculees par la page. Le PnL latent et la valeur de marche restent inconnus.
+La courbe est reconstituee depuis les fills, donc persiste apres redemarrage ;
+avant la premiere execution elle reste vide. Les composants affiches sont ceux
+declares par le superviseur ; apres 15 secondes sans heartbeat leur etat est inconnu.
 
 Le tunnel ngrok local existant vers le port du webhook est reutilise. Son URL
 reste donc celle deja configuree dans Alchemy. Sans tunnel correspondant, ngrok

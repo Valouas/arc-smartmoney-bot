@@ -4,6 +4,12 @@
 paper-copy bot together. `ETAT_BOT.bat` shows their state; `ARRETER_BOT.bat` stops
 the managed processes. See [launcher details](docs/WINDOWS_LAUNCHER.md).
 
+**Local dashboard:** open `TABLEAU_DE_BORD.bat` or http://127.0.0.1:8001 after
+starting the launcher. Paper portfolios, realized PnL, open inventory, historical
+rankings and collection progress refresh every 10 seconds, using read-only local
+data without additional RPC calls. The dashboard stays local; ngrok serves only
+the webhook on port 8000.
+
 V4 extends the V3 launch universe and wallet intelligence system with automatic
 smart-wallet discovery.
 

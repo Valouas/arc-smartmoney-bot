@@ -22,14 +22,14 @@ LOCK=Path('data/run_all.lock')
 STATE=Path('data/run_all_state.json')
 STOP=Path('data/run_all.stop')
 LOGS=Path('data/launcher_logs')
-ROLES=('launch_indexer','wallet_profiler','auto_discovery','bot','historical_analysis','alchemy_webhook','paper_copy')
+ROLES=('launch_indexer','wallet_profiler','auto_discovery','bot','historical_analysis','alchemy_webhook','paper_copy','dashboard')
 
 
 def roles_for(cfg):
     roles=list(ROLES[:4])
     if cfg.historical_analysis_enabled: roles.append('historical_analysis')
     if cfg.alchemy_webhook_enabled: roles.append('alchemy_webhook')
-    return roles+['paper_copy']
+    return roles+['paper_copy','dashboard']
 
 
 def busy(path):
@@ -154,12 +154,13 @@ def supervise(cfg):
                     children['ngrok']=launch([binary,'http','http://127.0.0.1:'+str(cfg.alchemy_webhook_port)],LOGS/'ngrok.log')
                 else: print('Ngrok introuvable. Les scanners RPC restent actifs.',flush=True)
         print('Ensemble lance. Ctrl+C ou ARRETER_BOT.bat pour arreter.',flush=True)
+        print('Tableau de bord : http://127.0.0.1:8001 | TABLEAU_DE_BORD.bat',flush=True)
         print('Journaux : data/launcher_logs | Etat : ETAT_BOT.bat',flush=True)
         while not STOP.exists():
             for role,p in children.items():
                 if p.poll() is None or role in warned: continue
                 warned.add(role)
-                if role in ('ngrok','alchemy_webhook'):
+                if role in ('ngrok','alchemy_webhook','dashboard'):
                     print(role+' indisponible ; scanners RPC maintenus. Consulter son journal.',flush=True)
                 else: raise RuntimeError(role+' est arrete. Consulter data/launcher_logs/'+role+'.log')
             if cfg.alchemy_webhook_enabled and not url:
