@@ -102,6 +102,50 @@ Les quantites viennent du decodeur existant (flottants) ; les calculs FIFO utili
 Decimal et une tolerance de 1e-12 relative pour les residus de fermeture. Ce rapport
 est une analyse de recherche, pas une comptabilite fiscale ni un backtest de copie.
 
+### Positions perdantes jamais revendues : controle du biais
+
+Un wallet peut vendre seulement ses gains et conserver ses pertes. Le hit rate,
+le rendement pondere et le profit factor des positions fermees ne suffisent donc
+pas a mesurer sa rentabilite globale. Le PnL prudent existant deduit deja TOUS les
+achats et le gas, y compris les achats encore ouverts. Ce controle de qualification
+est conserve et devient explicite dans le rapport, sans nouveau seuil arbitraire.
+
+Indicateurs ajoutes dans les exports et la console :
+
+- `open_positions_count` : nombre de tokens avec inventaire restant reconstruit.
+- `open_cost_basis_usdc` : cout FIFO des quantites encore detenues, pas leur valeur
+  de marche et pas necessairement du capital non recupere (une vente partielle
+  peut avoir rembourse tout l'achat).
+- `open_capital_share` : ce cout restant / somme de tous les achats observes.
+  Ce denominateur est un volume cumule, pas le solde ni les depots du wallet.
+- `capital_recovery_ratio` : toutes les ventes / (tous les achats + gas observe).
+- `conservative_return` : PnL prudent / (tous les achats + gas observe). C'est un
+  scenario de stress avec valeur residuelle nulle, pas un rendement de marche.
+- `oldest_open_position_age_hours` et `open_capital_weighted_age_hours` : age des
+  lots FIFO restants a la date du cutoff, et age pondere par leur cout restant.
+  Une vente retire bien les lots les plus anciens ; l'age n'avance pas simplement
+  parce que le meme rapport est relu plus tard. `position_age_as_of` donne la date.
+- `open_inventory_risk` : `PROFITS_COVER_OPEN_COST` si le PnL prudent reste
+  strictement positif avec inventaire ouvert ; `OPEN_COST_NOT_COVERED` sinon ;
+  `NO_OPEN_POSITION` si rien ne reste. Les lacunes donnent `INCOMPLETE_DATA` et
+  une analyse en cours `NOT_EVALUATED` (ou null sans metriques exploitables).
+- `closed_only_bias` : gains nets positifs sur les positions fermees, mais PnL
+  prudent non positif avec inventaire ouvert. Un avertissement explique ce biais.
+  Inconnu tant que l'analyse est en cours ou que des lacunes existent.
+
+Exemple : 80 USDC d'achats revendus 96, puis un achat de 100 jamais revendu.
+Les positions fermees peuvent afficher 100 % de reussite et +16 USDC. Le resultat
+prudent est pourtant -84 USDC hors gas, avec 100 USDC de cout restant. La raison
+`open_inventory_not_covered_by_realized_profit` explicite le blocage prudent deja
+present. Ce wallet reste observe. Un gros gain de 2 000 USDC avec dix achats ouverts
+de 1 USDC laisse au contraire +1 990 USDC dans ce scenario : le nombre de positions
+ouvertes n'est pas un filtre. Les autres preuves de repetition restent necessaires.
+
+Prix de marche et pertes latentes restent inconnus sans valorisation fiable.
+Une position ancienne ou non revendue n'est pas automatiquement declaree perdante.
+Ces indicateurs n'ajoutent aucun appel reseau, ne suppriment aucun candidat et ne
+changent ni le scoring forward, ni l'autorite de signal, ni les seuils historiques.
+
 ## Qualification explicite, sans autorite forward
 
 Statuts : `WATCH`, `PROMISING`, `HISTORICALLY_QUALIFIED`, `EXCLUDED`.

@@ -14,7 +14,7 @@ def amount(value):
     return number
 
 
-def analyze(transactions, cfg):
+def analyze(transactions, cfg, as_of=None):
     inventory = defaultdict(deque)
     rounds = defaultdict(lambda: {'basis': Decimal(0), 'profit': Decimal(0), 'gas': Decimal(0)})
     closed, buys, issues = [], [], set()
@@ -49,7 +49,7 @@ def analyze(transactions, cfg):
             rounds[token]['gas'] += amount(tx['gas_usdc']) if tx.get('gas_usdc') is not None else Decimal(0)
             if trade['side'] == 'BUY':
                 buys.append({'token': token, 'buy_usdc': float(cash), 'timestamp': ts})
-                inventory[token].append([qty, cash])
+                inventory[token].append([qty, cash, ts])
                 total_buy += cash
                 rounds[token]['basis'] += cash
             elif trade['side'] == 'SELL':
@@ -77,10 +77,23 @@ def analyze(transactions, cfg):
                     del rounds[token]
             else:
                 issues.add('invalid_trade_side')
-    open_positions = [{'token': token, 'quantity': str(sum((lot[0] for lot in lots), Decimal(0))),
-                       'cost_basis_usdc': float(sum((lot[1] for lot in lots), Decimal(0))),
-                       'market_value_usdc': None, 'unrealized_pnl_usdc': None}
-                      for token, lots in inventory.items() if lots]
+    # Age belongs to the historical cutoff, never to the report's wall clock.
+    # A partial FIFO sale removes the oldest lots and their original cost first.
+    age_at = end if as_of is None else as_of
+    open_positions, open_cost, weighted_age = [], Decimal(0), Decimal(0)
+    for token, lots in inventory.items():
+        if not lots: continue
+        cost = sum((lot[1] for lot in lots), Decimal(0))
+        oldest = min(lot[2] for lot in lots)
+        age_known = age_at is not None and all(age_at >= lot[2] for lot in lots)
+        age_cost = sum((lot[1]*Decimal(str(age_at-lot[2]))/3600 for lot in lots), Decimal(0)) if age_known else None
+        open_cost += cost
+        weighted_age = weighted_age+age_cost if weighted_age is not None and age_cost is not None else None
+        open_positions.append({'token': token, 'quantity': str(sum((lot[0] for lot in lots), Decimal(0))),
+                               'cost_basis_usdc': float(cost), 'oldest_remaining_buy_at': oldest,
+                               'oldest_lot_age_hours': (age_at-oldest)/3600 if age_known else None,
+                               'capital_weighted_age_hours': float(age_cost/cost) if age_cost is not None and cost else None,
+                               'market_value_usdc': None, 'unrealized_pnl_usdc': None})
     gross_profit = sum(max(0, p['profit_usdc']) for p in closed)
     gross_loss = sum(max(0, -p['profit_usdc']) for p in closed)
     best = max((p['profit_usdc'] for p in closed), default=0)
@@ -97,7 +110,21 @@ def analyze(transactions, cfg):
     # Assign every observed top-level gas cost, including failed/non-trade txs.
     # Open inventory is assigned zero only for this conservative lower bound.
     conservative = total_sell - total_buy - fees
+    cash_outlay = total_buy + fees
+    # These are stress indicators, not claims that the tokens actually lost value.
+    open_risk = ('INCOMPLETE_DATA' if issues else 'NO_OPEN_POSITION' if not open_positions else
+                 'PROFITS_COVER_OPEN_COST' if conservative > 0 else 'OPEN_COST_NOT_COVERED')
     return {'buys': len(buys), 'closed_positions': len(closed),
+            'open_positions_count': len(open_positions), 'open_cost_basis_usdc': float(open_cost),
+            'open_capital_share': float(open_cost/total_buy) if total_buy else None,
+            'capital_recovery_ratio': float(total_sell/cash_outlay) if cash_outlay else None,
+            'conservative_return': float(conservative/cash_outlay) if cash_outlay else None,
+            'open_inventory_risk': open_risk,
+            'closed_only_bias': None if issues else bool(open_positions and gross_profit > gross_loss and conservative <= 0),
+            'oldest_open_position_age_hours': max((p['oldest_lot_age_hours'] for p in open_positions), default=None)
+                if all(p['oldest_lot_age_hours'] is not None for p in open_positions) else None,
+            'open_capital_weighted_age_hours': float(weighted_age/open_cost) if weighted_age is not None and open_cost else None,
+            'position_age_as_of': age_at,
             'profitable_positions': sum(p['profit_usdc'] > 0 for p in closed),
             'profitable_tokens': sorted(t for t, profit in token_profits.items() if profit > 0),
             'closed_evidence_span_seconds': max((p['closed_at'] for p in closed), default=0)-min((p['closed_at'] for p in closed), default=0),
@@ -127,6 +154,8 @@ def performance_reasons(metrics, cfg):
     if metrics['profitable_periods'] < cfg.historical_min_profitable_periods: reasons.append('regularity_not_established')
     if metrics['closed_evidence_span_seconds'] < cfg.historical_period_hours*3600: reasons.append('evidence_period_too_short')
     if metrics['conservative_pnl_usdc'] <= 0: reasons.append('conservative_profit_not_positive')
+    if metrics['open_inventory_risk'] == 'OPEN_COST_NOT_COVERED':
+        reasons.append('open_inventory_not_covered_by_realized_profit')
     if metrics['concentration_risk'] == 'HIGH': reasons.append('profit_concentrated_in_one_position')
     return reasons
 

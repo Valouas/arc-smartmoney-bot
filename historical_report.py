@@ -32,7 +32,7 @@ def build_report(path, cfg, now=None):
             current = run.get('version') == VERSION
             complete = current and run.get('phase') == 'COMPLETE'
             if not current: transactions = []  # Invalidated generations cannot supply performance.
-            metrics = analyze(transactions, cfg)
+            metrics = analyze(transactions, cfg, as_of=run.get('cutoff_at'))
             identity = json.loads(run.get('identity', '{}'))
             category, reasons = qualify(metrics, run, identity, wallet in excluded, cfg, now)
             if wallet not in candidates:
@@ -47,6 +47,9 @@ def build_report(path, cfg, now=None):
             report_reasons = reasons if complete else [
                 'analysis_pending' if not run else 'snapshot_restart_required' if not current else 'analysis_in_progress',
                 *(['historical_collection_error'] if run.get('error') else []), *metrics['issues']]
+            if not complete:
+                metrics['open_inventory_risk'] = 'NOT_EVALUATED'
+                metrics['closed_only_bias'] = None
             if not available:
                 metrics = {k: v if k == 'issues' else None for k, v in metrics.items()}
             rows.append({'wallet': wallet, 'historical_class': category,
@@ -107,6 +110,9 @@ def publish(rows, cfg, output_dir='data', top=20, diverse=False, now=None):
                'performance_stages': dict(Counter(r['performance_stage'] for r in rows)),
                'completed_snapshots': sum(r['analysis_status'] == 'ANALYZED' for r in rows),
                'complete_data_wallets': sum(r['data_complete'] for r in rows),
+               'analyzed_wallets_with_open_positions': sum(r['analysis_status'] == 'ANALYZED' and bool(r['open_positions_count']) for r in rows),
+               'wallets_with_closed_only_bias': sum(r['closed_only_bias'] is True for r in rows),
+               'wallets_with_uncovered_open_cost': sum(r['open_inventory_risk'] == 'OPEN_COST_NOT_COVERED' for r in rows),
                'transactions_queued': sum(r['transactions_queued'] for r in rows),
                'transactions_decoded': sum(r['transactions_decoded'] for r in rows),
                'transactions_pending': sum(r['transactions_pending'] for r in rows),
@@ -125,6 +131,7 @@ def publish(rows, cfg, output_dir='data', top=20, diverse=False, now=None):
     print('HISTORIQUE | FIFO, gas observe, positions ouvertes non valorisees | aucune autorite live')
     print('N/D = donnees indisponibles. PARTIAL = reconstruction en cours, performance non evaluee.')
     print('WATCH = observation conservee; PREMIER RESULTAT POSITIF ne prouve pas une rentabilite repetee.')
+    print('PnL prudent = ventes - tous les achats - gas, solde ouvert suppose nul (stress, pas une valorisation).')
     print('Wallet | Analyse | Classe | Performance | Tx reconstruites/identifiees | Buys | Fermees | PnL brut | PnL prudent | Donnees')
     states = {'WAITING': 'EN ATTENTE', 'IN_PROGRESS': 'EN ANALYSE', 'ANALYZED': 'ANALYSE'}
     stages = {'NOT_EVALUATED': 'NON EVALUEE', 'PRELIMINARY_POSITIVE': 'PREMIER RESULTAT POSITIF',
@@ -132,6 +139,8 @@ def publish(rows, cfg, output_dir='data', top=20, diverse=False, now=None):
               'NO_CLOSED_POSITION': 'AUCUNE POSITION FERMEE'}
     def display(value, money=False):
         return 'N/D' if value is None else f'{value:.2f}' if money else str(value)
+    def percent(value):
+        return 'N/D' if value is None else f'{100*value:.1f}%'
     shown, seen = 0, set()
     for r in rows:
         if diverse and r['identity_cluster_id'] in seen: continue
@@ -142,6 +151,13 @@ def publish(rows, cfg, output_dir='data', top=20, diverse=False, now=None):
               f"{display(r['buys'])} | {display(r['closed_positions'])} | "
               f"{display(r['gross_realized_pnl_usdc'], True)} | {display(r['conservative_pnl_usdc'], True)} | {r['metrics_status']}")
         print('  '+(', '.join(r['report_reasons']) or 'qualifie historiquement; selection paper seulement'))
+        print(f"  Positions ouvertes: {display(r['open_positions_count'])} | Cout restant: {display(r['open_cost_basis_usdc'], True)} USDC | "
+              f"Part des achats: {percent(r['open_capital_share'])} | Capital recupere (gas inclus): {percent(r['capital_recovery_ratio'])} | "
+              f"Rendement prudent: {percent(r['conservative_return'])} | Age max au cutoff: {display(r['oldest_open_position_age_hours'], True)} h")
+        if r['open_inventory_risk'] is not None:
+            print('  Risque inventaire: '+r['open_inventory_risk']+' | Prix/PnL latent: inconnus')
+        if r['closed_only_bias']:
+            print('  ATTENTION: les gains des positions fermees masquent un cout ouvert non couvert; le hit rate ferme ne suffit pas.')
     print('Resume: '+json.dumps(summary))
     print(f'Selection paper: {len(selected)} wallets | {path / "historical_selection.json"}')
     return contract

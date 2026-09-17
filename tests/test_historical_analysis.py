@@ -473,3 +473,95 @@ def test_reconstruction_errors_are_not_reported_as_valid_zero_metrics(store,cfg)
     assert r['metrics_status']=='UNAVAILABLE' and r['buys'] is None
     assert r['performance_stage']=='NOT_EVALUATED' and not r['paper_selection_eligible']
     assert 'unsupported_or_ambiguous_reconstruction' in r['report_reasons']
+
+
+def test_unsold_inventory_cannot_hide_behind_perfect_closed_hit_rate(cfg):
+    rows=evidence(cfg)+[trade(17,'BUY',100,token=T,ts=49000)]
+    p=analyze(rows,cfg,as_of=NOW)
+    assert p['capital_weighted_hit_rate']==1 and p['capital_weighted_return']>.19
+    assert p['realized_less_all_observed_gas_usdc']==16
+    assert p['open_cost_basis_usdc']==100 and p['conservative_pnl_usdc']==-84
+    assert p['open_inventory_risk']=='OPEN_COST_NOT_COVERED' and p['closed_only_bias']
+    assert p['capital_recovery_ratio']==pytest.approx(96/180)
+    assert p['conservative_return']==pytest.approx(-84/180)
+    category,reasons=qualify(p,{'version':1,'phase':'COMPLETE','cutoff_at':NOW},
+        {'eligible':True,'independent_profitable_deployers':2},False,cfg,NOW)
+    assert category=='WATCH' and 'open_inventory_not_covered_by_realized_profit' in reasons
+    assert p['open_positions'][0]['market_value_usdc'] is None
+    assert p['open_positions'][0]['unrealized_pnl_usdc'] is None
+
+
+def test_large_winner_with_ten_small_unsold_tests_is_capital_weighted(cfg):
+    rows=[trade(1,'BUY',1000),trade(2,'SELL',3000)]
+    rows += [trade(n+3,'BUY',1,token='0x'+f'{n+100:040x}') for n in range(10)]
+    p=analyze(rows,cfg)
+    assert p['open_positions_count']==10 and p['open_cost_basis_usdc']==10
+    assert p['open_capital_share']==pytest.approx(10/1010)
+    assert p['conservative_pnl_usdc']==1990 and p['conservative_return']>1.9
+    assert p['open_inventory_risk']=='PROFITS_COVER_OPEN_COST' and not p['closed_only_bias']
+    assert p['concentration_risk']=='HIGH'  # Still not statistically robust.
+
+
+def test_qualified_wallet_can_keep_open_positions(cfg):
+    p=analyze(evidence(cfg)+[trade(17,'BUY',1,token=T,ts=49000)],cfg)
+    category,reasons=qualify(p,{'version':1,'phase':'COMPLETE','cutoff_at':NOW},
+        {'eligible':True,'independent_profitable_deployers':2},False,cfg,NOW)
+    assert category=='HISTORICALLY_QUALIFIED' and not reasons
+    assert p['open_positions_count']==1 and p['open_inventory_risk']=='PROFITS_COVER_OPEN_COST'
+
+
+def test_partial_exit_can_recover_all_capital_without_closing_position(cfg):
+    p=analyze([trade(1,'BUY',100,qty=10,gas=1),trade(2,'SELL',150,qty=5,gas=1)],cfg)
+    assert p['closed_positions']==0 and p['open_positions_count']==1
+    assert p['open_cost_basis_usdc']==50 and p['open_capital_share']==.5
+    assert p['conservative_pnl_usdc']==48 and p['capital_recovery_ratio']==pytest.approx(150/102)
+    assert p['conservative_return']==pytest.approx(48/102)
+    assert p['open_inventory_risk']=='PROFITS_COVER_OPEN_COST'
+
+
+def test_open_position_age_uses_remaining_fifo_lots_and_cutoff(cfg):
+    rows=[trade(1,'BUY',100,qty=10,ts=0),trade(2,'BUY',200,qty=10,ts=3600),
+          trade(3,'SELL',120,qty=10,ts=7200)]
+    p=analyze(rows,cfg,as_of=10800)
+    assert p['open_cost_basis_usdc']==200
+    assert p['oldest_open_position_age_hours']==2
+    assert p['open_capital_weighted_age_hours']==2
+    assert p['open_positions'][0]['oldest_remaining_buy_at']==3600
+    assert p['position_age_as_of']==10800
+    mixed=analyze(rows[:2],cfg,as_of=10800)
+    assert mixed['oldest_open_position_age_hours']==3
+    assert mixed['open_capital_weighted_age_hours']==pytest.approx((100*3+200*2)/300)
+
+
+def test_no_price_no_loss_claim_and_empty_metrics_have_no_ratios(cfg):
+    p=analyze([],cfg,as_of=NOW)
+    assert p['capital_recovery_ratio'] is None and p['conservative_return'] is None
+    assert p['open_capital_share'] is None and p['oldest_open_position_age_hours'] is None
+    assert p['open_inventory_risk']=='NO_OPEN_POSITION'
+    p=analyze([trade(1,'BUY',100,ts=1)],cfg,as_of=NOW)
+    assert p['conservative_return']==-1 and p['open_inventory_risk']=='OPEN_COST_NOT_COVERED'
+    assert p['open_positions'][0]['unrealized_pnl_usdc'] is None  # Not a measured 100% loss.
+
+
+def test_open_risk_unknown_with_reconstruction_gaps(cfg):
+    tx=trade(1,'BUY',100); tx['gas_usdc']=None
+    p=analyze([tx],cfg)
+    assert p['open_inventory_risk']=='INCOMPLETE_DATA' and p['closed_only_bias'] is None
+
+
+def test_report_exports_open_exposure_without_changing_engine_data(store,cfg,tmp_path,capsys):
+    seed_run(store,W,'COMPLETE',payloads=evidence(cfg)+[trade(17,'BUY',100,token=T,ts=49000)])
+    seed_run(store,W2,payloads=evidence(cfg)+[trade(17,'BUY',100,token=T,ts=49000)])
+    rows=build_report(store.path,cfg,NOW+10000)
+    by_wallet={r['wallet']:r for r in rows}
+    assert by_wallet[W]['oldest_open_position_age_hours']==pytest.approx((NOW-49000)/3600)
+    assert by_wallet[W2]['open_inventory_risk']=='NOT_EVALUATED' and by_wallet[W2]['closed_only_bias'] is None
+    result=publish(rows,cfg,tmp_path,now=NOW+10000)
+    assert not result['wallets']
+    text=capsys.readouterr().out
+    assert 'Cout restant: 100.00 USDC' in text and 'le hit rate ferme ne suffit pas' in text
+    report=json.loads((tmp_path/'historical_wallet_ranking.json').read_text())
+    assert report['summary']['wallets_with_closed_only_bias']==1
+    assert report['summary']['wallets_with_uncovered_open_cost']==1
+    assert store.db.execute('SELECT COUNT(*) FROM discovery_candidates').fetchone()[0]==2
+    assert store.db.execute('SELECT COUNT(*) FROM promoted_wallets').fetchone()[0]==0
