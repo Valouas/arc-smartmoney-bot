@@ -1,5 +1,9 @@
 # Arc Smart-Money Radar V4 — Auto-Discovery
 
+**Windows:** double-click `LANCER_BOT.bat` to run the analyzer, webhook and separate
+paper-copy bot together. `ETAT_BOT.bat` shows their state; `ARRETER_BOT.bat` stops
+the managed processes. See [launcher details](docs/WINDOWS_LAUNCHER.md).
+
 V4 extends the V3 launch universe and wallet intelligence system with automatic
 smart-wallet discovery.
 
