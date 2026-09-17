@@ -1,0 +1,10 @@
+{
+  "http_status": 400,
+  "requested_blocks": 40,
+  "accepted_blocks": 10,
+  "error_code": -32600,
+  "reason": "Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range.",
+  "chain_id": 5042,
+  "observed_at": "2026-09-18",
+  "note": "Minimal redacted live reproduction; no endpoint, key or response body stored."
+}

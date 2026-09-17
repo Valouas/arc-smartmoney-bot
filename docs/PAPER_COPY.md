@@ -236,3 +236,18 @@ Tests du bot :
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_paper_copy.py -q
 ```
+# RPC log query compatibility
+
+The persisted 40-block processing window is fetched in inclusive subranges of
+at most 10 blocks, for both Transfer directions and every wallet batch. This is
+a transport bound, not a change to the stored simulation policy or buy sizing.
+All subrequests must succeed before processing any block in the window. A later
+subrequest failure discards the staged results and preserves the checkpoint;
+the next cycle retries the same window. Generic HTTP 400 failures still fail
+closed and are not retried by the transport or interpreted as empty logs.
+
+Live reproduction on 2026-09-18: the configured Alchemy Arc mainnet endpoint
+(chain ID 5042) rejected a 40-block request at checkpoint 21395350 with HTTP 400,
+JSON-RPC -32600, explicitly stating a 10-block free-plan limit. The same filter
+over ten blocks succeeded. See `tests/fixtures/alchemy_free_log_range.json` for
+the minimal sanitized diagnostic. No endpoint or credentials are stored there.

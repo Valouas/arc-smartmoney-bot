@@ -259,6 +259,64 @@ def test_rpc_failure_does_not_checkpoint_and_resume_skips_no_block(ledger,cfg):
     assert scanner.cycle({W:entry()})==0
 
 
+@pytest.mark.parametrize('count',[1,10,11,40,43])
+def test_alchemy_free_range_is_split_inclusive_without_gaps(ledger,cfg,count):
+    from pathlib import Path
+    limit=json.loads((Path(__file__).parent/'fixtures/alchemy_free_log_range.json').read_text())
+    rpc=fake_rpc()
+    def limited(query):
+        if query['toBlock']-query['fromBlock']+1 > limit['accepted_blocks']:
+            raise RPCError('eth_getLogs',str(limit['http_status']),1,'primary')
+        return []
+    rpc.w3.eth.get_logs.side_effect=limited
+    assert Scanner(ledger,rpc,Policy(),cfg).participants(100,99+count,[W])=={}
+    queries=[c.args[0] for c in rpc.w3.eth.get_logs.call_args_list]
+    for position in (1,2):
+        side=[q for q in queries if len(q['topics'])==position+1]
+        covered=[n for q in side for n in range(q['fromBlock'],q['toBlock']+1)]
+        assert covered==list(range(100,100+count))
+
+
+@pytest.mark.parametrize('category',['400','502'])
+def test_later_subrange_failure_preserves_checkpoint_and_order_on_resume(ledger,cfg,category):
+    rpc=fake_rpc(); rpc.block_number.return_value=42; checkpoint(ledger)
+    rpc.w3.eth.get_logs.side_effect=[[],[],[],RPCError('eth_getLogs',category,1,'primary')]
+    scanner=Scanner(ledger,rpc,Policy(),cfg)
+    callbacks=[]
+    with pytest.raises(RPCError):
+        scanner.cycle({W:entry()},on_block=lambda:callbacks.append(ledger.get('next_block')))
+    assert ledger.get('next_block')=='1' and callbacks==[]
+    assert ledger.db.execute('SELECT COUNT(*) FROM observations').fetchone()[0]==0
+    rpc.w3.eth.get_logs.side_effect=None
+    assert scanner.cycle({W:entry()},on_block=lambda:callbacks.append(ledger.get('next_block')))==40
+    assert callbacks==[str(n) for n in range(2,42)]
+    assert ledger.get('next_block')=='41'
+    assert scanner.cycle({W:entry()})==0
+    assert cash(ledger)==1000  # Restart does not fund an existing account again.
+
+
+def test_chunk_boundaries_keep_logs_and_deduplicate_both_transfer_sides(ledger,cfg):
+    from rpc import TRANSFER_TOPIC
+    rpc=fake_rpc()
+    def logs(query):
+        return [{'blockNumber':n,'blockHash':n.to_bytes(32,'big'),
+                 'transactionHash':n.to_bytes(32,'big'),
+                 'topics':[TRANSFER_TOPIC,'0x'+'0'*24+W[2:],'0x'+'0'*24+W2[2:]]}
+                for n in (10,11) if query['fromBlock']<=n<=query['toBlock']]
+    rpc.w3.eth.get_logs.side_effect=logs
+    result=Scanner(ledger,rpc,Policy(),cfg).participants(1,20,[W,W2])
+    assert len(result)==2
+    for n in (10,11):
+        assert result[(n,n.to_bytes(32,'big').hex())]['wallets']=={W,W2}
+
+
+def test_log_outside_its_subrange_is_rejected_even_inside_full_window(ledger,cfg):
+    rpc=fake_rpc()
+    rpc.w3.eth.get_logs.return_value=[{'blockNumber':11,'topics':[]}]
+    with pytest.raises(ChainConsistencyError,match='Invalid log range'):
+        Scanner(ledger,rpc,Policy(),cfg).participants(1,40,[W])
+
+
 def test_reorganization_halts_without_modifying_paper_accounts(ledger,cfg):
     rpc=fake_rpc(); checkpoint(ledger)
     with ledger.db: ledger.set('last_hash','bad')

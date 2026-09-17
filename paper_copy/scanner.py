@@ -8,6 +8,10 @@ from rpc import TRANSFER_TOPIC, ERC20_ABI
 from wallet_policy import infrastructure_addresses
 from .policy import size_buy
 
+# Transport bound, independent of the persisted simulation policy. Alchemy's
+# free endpoint accepts at most ten blocks (inclusive) per eth_getLogs call.
+LOG_QUERY_BLOCKS = 10
+
 
 class ChainConsistencyError(RuntimeError): pass
 
@@ -40,6 +44,15 @@ class Scanner:
         return sorted({r[0] for r in rows if r[0] not in excluded})
 
     def participants(self, first, last, wallets):
+        # Stage every subrange before cycle() processes/checkpoints any block.
+        # Never convert a failed subrequest into an empty set of participants.
+        result = {}
+        for start in range(first, last + 1, LOG_QUERY_BLOCKS):
+            end = min(last, start + LOG_QUERY_BLOCKS - 1)
+            result.update(self._participants_range(start, end, wallets))
+        return result
+
+    def _participants_range(self, first, last, wallets):
         result = {}
         for offset in range(0,len(wallets),100):
             batch = set(wallets[offset:offset+100])
