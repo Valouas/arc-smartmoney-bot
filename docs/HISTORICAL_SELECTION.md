@@ -227,6 +227,25 @@ est disponible via `python -m paper_copy` ; voir [sa documentation](PAPER_COPY.m
 La rentabilite historique peut etre selectionnee pour le paper, jamais assimilee
 a une performance future garantie ou a une autorisation d'execution reelle.
 
+### Admission paper avec reserves (export distinct)
+
+Le rapport produit aussi `data/paper_review_selection.json`, schema 2, utilise
+par defaut par le paper-copy. Il conserve exactement les seuils de performance
+ci-dessus et accepte uniquement une liste explicite de reserves de reconstruction
+et d'identite des deployeurs. Il accepte plusieurs wallets du meme cluster dans
+des portefeuilles separes, sans les compter comme preuves independantes.
+Voir [regles detaillees](PAPER_COPY.md#selection-et-retrait).
+
+Le classement strict et `paper_selection_eligible` ne sont pas detournes.
+Les champs distincts `paper_review_eligible`, `paper_review_warnings` et
+`paper_review_blockers` expliquent l'admission de recherche. Aucun seuil de
+scoring forward, statut de promotion, formule de sizing, frais ou stop n'est modifie.
+
+L'adresse nulle n'est plus acceptee comme financeur dans IdentityGraph. Les anciens
+snapshots contenant une composante fusionnee via cette adresse sont marques
+identite non etablie dans le rapport, sans modifier leurs transactions conservees.
+Ce correctif ne prouve pas que les wallets ainsi separes sont independants.
+
 ## Commandes PowerShell
 
 ```powershell

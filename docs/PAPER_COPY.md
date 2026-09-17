@@ -1,6 +1,6 @@
 # Bot de copie paper independant
 
-Ce processus observe les nouveaux trades des wallets qualifies. Il est distinct
+Ce processus observe les nouveaux trades des wallets admis en paper. Il est distinct
 du scanner historique et du paper trader historique existant : son portefeuille,
 ses positions, ses ordres et son checkpoint sont dans `data/paper_copy.sqlite3`.
 Il ne modifie pas la base de l'analyseur et n'est pas ajoute a `run_v4.py`.
@@ -19,7 +19,7 @@ Le code commun de transport RPC et de preuve trusted DEX reste reutilise.
   pas cette reference par un historique qui pourrait inclure des observations futures.
 - Moins de 5 achats exploitables : 10 USDC et confiance LOW ; de 5 a 9 : MEDIUM ;
   a partir de 10 : HIGH. La qualification actuelle devrait deja fournir au moins
-  8 achats. Ce fallback ne donne aucune autorite a un wallet non qualifie.
+  8 achats. Ce fallback ne donne aucune autorite live a un wallet.
 - Le budget de 10 a 100 inclut les frais et le gas simules. Si le cash restant
   est inferieur au budget, le debit est reduit a ce cash, mais jamais sous 10 USDC.
   Sinon l'achat est ignore explicitement. Aucun emprunt ni rechargement automatique.
@@ -35,10 +35,49 @@ Le code commun de transport RPC et de preuve trusted DEX reste reutilise.
 
 ## Selection et retrait
 
-Source unique : `data/historical_selection.json`, produit par l'analyseur.
-Le consommateur controle version, chain ID 5042, finalite de l'analyse, completude,
-statut HISTORICALLY_QUALIFIED, expiration, identite eligible, unicite du cluster
-et exclusion des infrastructures DEX. Il n'ajoute ni WATCH ni PROMISING.
+Source par defaut : `data/paper_review_selection.json`, produit par l'analyseur
+et le ranking historique. Schema 2, `admission_policy=paper_review_v1`, classe
+de simulation `PAPER_REVIEW` : cette admission ne change pas le statut historique
+WATCH/PROMISING et ne signifie pas HISTORICALLY_QUALIFIED.
+
+Tous les seuils de performance precedents sont conserves, depuis la meme fonction
+de regles : 8 achats, 5 positions fermees, 2 tokens profitables, 2 periodes de 6 h
+profitables, fermetures etalees sur au moins 6 h, PnL prudent positif et contribution
+maximale d'une position de 80 % (valeurs par defaut de la configuration existante).
+Le consommateur les recalcule au chargement ; un flag eligible seul ne suffit pas.
+
+Seulement ces cinq motifs deviennent des avertissements pour la selection paper :
+
+- `external_or_unexplained_token_movement` ;
+- `gas_cost_unknown` ;
+- `unsupported_or_ambiguous_reconstruction` ;
+- `insufficient_independent_profitable_tokens` ;
+- `profitable_deployer_identity_unknown`.
+
+Leurs metriques historiques restent marquees INCOMPLETE. Le gas inconnu n'est
+pas declare nul et les transactions ambigues ne sont pas declarees sans perte.
+Le PnL historique sert a choisir une experience, pas a prouver un rendement fiable.
+Le rapport paper conserve la classe historique, les reserves et le cluster.
+
+Le parcours du snapshot doit toujours etre termine, sans erreur de collecte,
+avec un cutoff d'au plus 48 h et un export non expire. Les nouvelles erreurs,
+ventes sans cout d'achat complet, autres identites inconnues/services partages
+et infrastructures DEX restent bloquantes. Aucune exclusion generale des smart accounts.
+Tous les nouveaux swaps copies restent strictement verifies par le decodeur
+trusted DEX et les donnees/prix necessaires a la simulation doivent etre presents.
+
+Plusieurs wallets lies peuvent etre testes dans leurs portefeuilles separes.
+Leur cluster est conserve et ils ne deviennent pas des confirmations independantes.
+Le faux lien via `0x000...000` est corrige : ce n'est pas un financeur. Les preuves
+d'identite anciennes contaminees sont invalidees en lecture seule dans le rapport.
+Le cas specifique reste admissible en paper avec `null_funder_identity_unknown`,
+mais `identity_known=false`, sans autorite de signal. Les vraies relations de
+financement ne sont pas supprimees.
+
+L'export strict `data/historical_selection.json` (schema 1) garde ses exigences
+de completude, identite et unicite de cluster. Pour le choisir explicitement :
+`python -m paper_copy --selection data/historical_selection.json`.
+Dans ce cas, donner aussi ce chemin au receiver via `--paper-selection`.
 
 Une liste vide ne cree aucun portefeuille et ne fait aucun appel RPC. Le processus
 reste en attente et relit le fichier toutes les 2 secondes. Un fichier absent,
@@ -115,7 +154,7 @@ notification Telegram n'est ajoutee. Les seuls appels reseau lisent les donnees.
 
 Avec `ALCHEMY_WEBHOOK_ENABLED=true`, le meme receiver signe peut maintenant
 alimenter le V4 et le paper-copy. Sa file `alchemy_paper_triggers` est distincte
-de celle du V4 : seuls les wallets de la selection historique valide et les
+de celle du V4 : seuls les wallets de la selection paper valide et les
 wallets ayant encore des sorties/observations paper a traiter y sont routes.
 Cela ne promeut aucun WATCH/QUARANTINE et ne donne aucune autorite live au V4.
 
@@ -160,7 +199,7 @@ gardant ngrok ouvert. Mettre a jour manuellement les adresses dans Alchemy avec 
 ```
 
 Puis lancer le paper-copy separement avec la commande habituelle ci-dessous.
-Une selection vide affiche `QUALIFIED_WALLETS=0` et attend sans RPC ; aucun
+Une selection vide affiche `PAPER_WALLETS=0` et attend sans RPC ; aucun
 wallet n'est ajoute pour forcer un trade de demonstration.
 
 Options : `--no-webhook` conserve le polling original ; `--webhook-db chemin`
@@ -176,6 +215,7 @@ Dans une nouvelle fenetre, en laissant l'analyseur tourner :
 ```powershell
 Set-Location "C:\Users\Valen\Desktop\bot\arc_smartmoney_bot\audit-issue-1"
 git pull --ff-only origin fix/issue-1-v4-audit
+.\.venv\Scripts\python.exe historical_analysis.py --report-only --top 4
 .\.venv\Scripts\python.exe -m paper_copy
 ```
 

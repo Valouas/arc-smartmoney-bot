@@ -15,11 +15,12 @@ from .scanner import Scanner, ChainConsistencyError
 from .selection import load_selection, SelectionError
 from .store import Store
 from .webhook import LiveWakeup
+from paper_admission import DEFAULT_SELECTION
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--selection',default='data/historical_selection.json')
+    parser.add_argument('--selection',default=DEFAULT_SELECTION)
     parser.add_argument('--db',default='data/paper_copy.sqlite3')
     parser.add_argument('--policy',help='JSON simulation assumptions; frozen for each database')
     parser.add_argument('--once',action='store_true')
@@ -44,7 +45,8 @@ def main(argv=None):
                 now = int(time.time())
                 try:
                     selected = load_selection(args.selection,SETTINGS,now)
-                    status = 'QUALIFIED_WALLETS='+str(len(selected))
+                    review_count=sum(e.get('admission')=='PAPER_REVIEW' for e in selected.values())
+                    status = 'PAPER_WALLETS='+str(len(selected))+' | PAPER_REVIEW='+str(review_count)+' | STRICT='+str(len(selected)-review_count)
                 except SelectionError:
                     selected = {}; status = 'SELECTION_UNAVAILABLE: nouveaux achats desactives'
                 # Expiration/removal blocks buys while preserving exit tracking.

@@ -8,11 +8,12 @@ from web3 import Web3
 from wallet_policy import infrastructure_addresses
 from .selection import load_selection, SelectionError
 from .policy import decimal
+from paper_admission import DEFAULT_SELECTION
 
 
-def watch_addresses(cfg, selection_path='data/historical_selection.json',
+def watch_addresses(cfg, selection_path=DEFAULT_SELECTION,
                     paper_path='data/paper_copy.sqlite3', now=None):
-    """Qualified buys plus existing exits, without creating a paper database."""
+    """Paper-admitted buys plus existing exits, without creating a database."""
     now=int(time.time()) if now is None else now
     try: wallets=set(load_selection(selection_path,cfg,now))
     except SelectionError: wallets=set()

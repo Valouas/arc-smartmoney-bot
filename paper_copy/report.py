@@ -17,11 +17,16 @@ def report(path):
         initial = decimal(policy['initial_cash'])
         rows = []
         for account in db.execute('SELECT * FROM wallets ORDER BY wallet'):
+            selection=json.loads(account['selection'])
             positions = [dict(p) for p in db.execute('SELECT * FROM positions WHERE wallet=?',(account['wallet'],)) if decimal(p['quantity'])>0]
             fills = list(db.execute('SELECT side,realized_pnl FROM fills WHERE wallet=?',(account['wallet'],)))
             pnl = sum((decimal(r['realized_pnl'].lstrip('-'))*(-1 if r['realized_pnl'].startswith('-') else 1) for r in fills),decimal(0))
             cost = sum((decimal(p['cost']) for p in positions),decimal(0))
             rows.append({'wallet':account['wallet'],'active':bool(account['active']),'cash':account['cash'],
+                'admission':selection.get('admission','HISTORICALLY_QUALIFIED'),
+                'historical_class':selection.get('historical_class'),'warnings':selection.get('warnings',[]),
+                'identity_cluster':selection['cluster'],'identity_known':selection.get('identity_known',False),
+                'related_wallets_count':selection.get('related_wallets_count',0),
                 'realized_pnl':str(pnl),'open_cost':str(cost),'open_positions':positions,
                 'equity_market':None,'unrealized_pnl':None,'cash_only_pnl':str(decimal(account['cash'])-initial),
                 'buys':sum(r['side']=='BUY' for r in fills),'sells':sum(r['side']=='SELL' for r in fills)})
@@ -36,6 +41,9 @@ def report(path):
     for r in rows:
         print(f"{r['wallet']} | {float(r['cash']):.2f} | {float(r['realized_pnl']):+.2f} | "
               f"{float(r['open_cost']):.2f} | {float(r['cash_only_pnl']):+.2f} | {r['buys']}/{r['sells']}")
+        print('  '+r['admission']+' | Cluster: '+r['identity_cluster']+
+              (' (identite non etablie)' if not r['identity_known'] else '')+
+              ' | Reserves: '+(', '.join(r['warnings']) or 'aucune'))
     print('Valorisation des positions ouvertes: inconnue; elles ne sont pas declarees sans perte.')
     print(json.dumps({'wallets':len(rows),'progress':progress,'observations':orders,'reasons':reasons,'reconstruction_gaps':gaps,'webhook_triggers':webhook}))
     return rows

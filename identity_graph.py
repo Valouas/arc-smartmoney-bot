@@ -6,6 +6,8 @@ import time
 import re
 from concurrent.futures import ThreadPoolExecutor
 
+ZERO_ADDRESS='0x'+'0'*40
+
 @dataclass
 class WalletFacts:
     address: str
@@ -15,6 +17,7 @@ class WalletFacts:
     latest_block: Optional[int] = None
     fetched_at: int = 0
     shared_service: bool = False
+    null_funder: bool = False
 
 def _walk(obj, path=""):
     if isinstance(obj, dict):
@@ -56,6 +59,7 @@ class IdentityGraph:
         return self.parent[x]
 
     def union(self, a: str, b: str):
+        if ZERO_ADDRESS in (a.lower(),b.lower()): return
         ra, rb = self.find(a), self.find(b)
         if ra != rb: self.parent[rb] = ra
 
@@ -66,7 +70,7 @@ class IdentityGraph:
         wallets=list(dict.fromkeys(a.lower() for a in wallets))
         def fetch(addr):
             cached=old.get(addr)
-            if cached and cached.funded_by and now-cached.fetched_at<self.cache_seconds:
+            if cached and cached.funded_by and cached.funded_by!=ZERO_ADDRESS and now-cached.fetched_at<self.cache_seconds:
                 return addr,cached
             retry=self._retry.get(addr,(0,0))
             if now<retry[1]: return addr,WalletFacts(address=addr)
@@ -109,6 +113,13 @@ class IdentityGraph:
         for path, value in _walk(data):
             if facts.funded_by is None and ("funded_by" in path or "fundedby" in path or path.endswith(".funder") or path == "funder"):
                 candidate = _first_address(value)
+                if candidate==ZERO_ADDRESS:
+                    facts.null_funder=True
+                    if isinstance(value,dict):
+                        label=value.get('label') or {}
+                        category=value.get('category') or (label.get('category') if isinstance(label,dict) else None)
+                        facts.shared_service=category in {'exchange','bridge','faucet','custodian'}
+                    continue
                 if candidate and candidate != addr.lower():
                     facts.funded_by = candidate
                     if isinstance(value, dict):
@@ -127,7 +138,7 @@ class IdentityGraph:
 
     def eligible(self, wallet):
         facts = self.facts.get(wallet.lower())
-        return bool(facts and facts.funded_by and not facts.shared_service)
+        return bool(facts and facts.funded_by and facts.funded_by!=ZERO_ADDRESS and not facts.shared_service)
 
     def identity_id(self, wallet: str) -> str: return self.find(wallet)
     def independent_count(self, wallets: list[str]) -> int: return len({self.identity_id(w) for w in wallets})

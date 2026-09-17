@@ -11,8 +11,11 @@ qualification in this mode. It does not grant runtime trading authority.
 See [historical selection and consumer contract](docs/HISTORICAL_SELECTION.md).
 Use `python wallet_ranking.py --historical --top 20` for this ranking.
 
-**Separate live paper-copy bot:** `python -m paper_copy` consumes that expiring
-selection with an independent database and a virtual 1,000 USDC account per wallet.
+**Separate live paper-copy bot:** `python -m paper_copy` consumes the separate
+`paper_review_selection.json` export: unchanged performance thresholds, with
+explicit historical-data warnings allowed for paper experiments only. Strict
+`historical_selection.json` qualification remains available and unchanged.
+Each wallet has an independent virtual 1,000 USDC account.
 It sizes buys between 10 and 100 USDC relative to prior median buys and copies
 proportional sells. It is not started by `run_v4.py`. See
 [paper-copy setup, assumptions and commands](docs/PAPER_COPY.md).
@@ -20,7 +23,7 @@ proportional sells. It is not started by `run_v4.py`. See
 **Optional Alchemy Address Activity ingress:** `ALCHEMY_WEBHOOK_ENABLED=true`
 adds a local receiver to `run_v4.py`. Signed notifications queue live triggers
 for the existing V4 engine and wake the independent `paper_copy` scanner for
-qualified wallets, without moving either checkpoint from webhook data. See
+paper-admitted wallets, without moving either checkpoint from webhook data. See
 [webhook setup and ngrok commands](docs/ALCHEMY_WEBHOOK.md).
 
 The core rule is deliberately conservative:

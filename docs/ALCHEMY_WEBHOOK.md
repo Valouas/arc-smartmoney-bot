@@ -72,7 +72,7 @@ Configurer les adresses surveillees dans Alchemy a partir de :
 
 Cette commande fournit l'union de la watchlist effective du V4 (seed + generated
 + candidats QUARANTINE observes avec poids zero, dans la limite du scanner) et
-des wallets qualifies pour paper-copy / sorties de positions paper existantes.
+des wallets admis pour paper-copy / sorties de positions paper existantes.
 Pour obtenir uniquement la liste paper : `python alchemy_webhook.py --paper-addresses`.
 Les infrastructures DEX reviewed sont exclues. Ce fichier n'accorde pas d'autorite
 aux candidats. Les changements de liste doivent egalement etre reportes dans
@@ -100,7 +100,7 @@ Tables additives dans la base V4 :
 - `alchemy_items` : event ID + transaction + log index, ou -1 si absent.
 - `alchemy_jobs` : transaction + wallet, statut PENDING/DONE/IGNORED et retry.
 - `alchemy_paper_triggers` : transaction + wallet + reception, pour le consommateur
-  paper independant. Un wallet qualifie paper uniquement n'entre pas pour autant
+  paper independant. Un wallet admis en paper uniquement n'entre pas pour autant
   dans `alchemy_jobs` ou dans l'autorite du moteur V4.
 
 Les logs multiples d'un swap et les redeliveries ne multiplient pas les jobs.

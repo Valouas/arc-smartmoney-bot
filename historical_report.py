@@ -11,6 +11,7 @@ from historical_metrics import analyze, qualify, performance_stage
 from historical_store import VERSION
 from wallet_policy import infrastructure_addresses
 from wallet_ranking import export_csv
+from paper_admission import assess, POLICY, ZERO_ADDRESS
 
 
 def build_report(path, cfg, now=None):
@@ -34,6 +35,13 @@ def build_report(path, cfg, now=None):
             if not current: transactions = []  # Invalidated generations cannot supply performance.
             metrics = analyze(transactions, cfg, as_of=run.get('cutoff_at'))
             identity = json.loads(run.get('identity', '{}'))
+            # Old persisted components may have merged unrelated wallets via
+            # the zero address. Invalidate that proof without rewriting history.
+            null_identity=(identity.get('null_funder') is True or identity.get('funder')==ZERO_ADDRESS
+                           or identity.get('cluster')==ZERO_ADDRESS or ZERO_ADDRESS in identity.get('members',[]))
+            if null_identity:
+                identity={**identity,'eligible':False,'members':[wallet],'cluster':None}
+                if identity.get('funder')==ZERO_ADDRESS: identity['funder']=None
             category, reasons = qualify(metrics, run, identity, wallet in excluded, cfg, now)
             if wallet not in candidates:
                 category = 'EXCLUDED' if wallet in excluded else 'WATCH'
@@ -70,6 +78,7 @@ def build_report(path, cfg, now=None):
                          'historical_identity_cluster': identity.get('cluster'),
                          'identity_members': identity.get('members', []),
                          'identity_eligible': bool(identity.get('eligible')),
+                         'null_funder_identity_unknown': null_identity,
                          'independent_profitable_deployers': identity.get('independent_profitable_deployers', 0),
                          'funder': identity.get('funder'), 'shared_service': identity.get('shared_service'),
                          'infrastructure_excluded': wallet in excluded,
@@ -94,6 +103,10 @@ def build_report(path, cfg, now=None):
     for r in rows:
         r['identity_cluster_size'] = counts[r['identity_cluster_id']]
         r['related_wallets_count'] = counts[r['identity_cluster_id']]-1
+        warnings,blockers=assess(r,cfg,now)
+        r['paper_review_eligible']=not blockers
+        r['paper_review_warnings']=warnings
+        r['paper_review_blockers']=blockers
     order = {'HISTORICALLY_QUALIFIED': 0, 'PROMISING': 1, 'WATCH': 2, 'EXCLUDED': 3}
     phases = {'COMPLETE': 0, 'DECODING': 1, 'FETCHING': 2, 'NOT_STARTED': 3}
     rows.sort(key=lambda r: (order[r['historical_class']], phases.get(r['snapshot_phase'], 3) if r['analysis_status'] != 'WAITING' else 3, -(r['profitable_periods'] or 0),
@@ -127,6 +140,14 @@ def publish(rows, cfg, output_dir='data', top=20, diverse=False, now=None):
                 'requires_consumer_validation': True, 'one_wallet_per_identity_cluster': True,
                 'wallets': selected}
     write_json(path/'historical_selection.json', contract)
+    # Separate contract: broad paper admission is never a strict qualification
+    # and cannot silently weaken existing consumers of historical_selection.
+    review={'schema_version':2,'admission_policy':POLICY,'chain_id':cfg.chain_id,'generated_at':now,
+            'purpose':'paper_review_selection','live_signal_authority':False,
+            'requires_consumer_validation':True,'one_wallet_per_identity_cluster':False,
+            'wallets':[r for r in rows if r['paper_review_eligible'] and r['expires_at']>now]}
+    write_json(path/'paper_review_selection.json',review)
+    summary['paper_review_wallets']=len(review['wallets'])
     write_json(path/'historical_wallet_ranking.json', {'generated_at': now, 'summary': summary, 'wallets': rows})
     print('HISTORIQUE | FIFO, gas observe, positions ouvertes non valorisees | aucune autorite live')
     print('N/D = donnees indisponibles. PARTIAL = reconstruction en cours, performance non evaluee.')
@@ -151,6 +172,11 @@ def publish(rows, cfg, output_dir='data', top=20, diverse=False, now=None):
               f"{display(r['buys'])} | {display(r['closed_positions'])} | "
               f"{display(r['gross_realized_pnl_usdc'], True)} | {display(r['conservative_pnl_usdc'], True)} | {r['metrics_status']}")
         print('  '+(', '.join(r['report_reasons']) or 'qualifie historiquement; selection paper seulement'))
+        if r['analysis_status']=='ANALYZED':
+            print('  Paper avec reserves: '+('ADMIS' if r['paper_review_eligible'] else 'NON ADMIS')+
+                  ' | '+(', '.join(r['paper_review_warnings'] if r['paper_review_eligible'] else r['paper_review_blockers']) or 'aucune reserve'))
+        else:
+            print('  Paper avec reserves: EN ATTENTE | analyse non terminee')
         print(f"  Positions ouvertes: {display(r['open_positions_count'])} | Cout restant: {display(r['open_cost_basis_usdc'], True)} USDC | "
               f"Part des achats: {percent(r['open_capital_share'])} | Capital recupere (gas inclus): {percent(r['capital_recovery_ratio'])} | "
               f"Rendement prudent: {percent(r['conservative_return'])} | Age max au cutoff: {display(r['oldest_open_position_age_hours'], True)} h")
@@ -160,4 +186,5 @@ def publish(rows, cfg, output_dir='data', top=20, diverse=False, now=None):
             print('  ATTENTION: les gains des positions fermees masquent un cout ouvert non couvert; le hit rate ferme ne suffit pas.')
     print('Resume: '+json.dumps(summary))
     print(f'Selection paper: {len(selected)} wallets | {path / "historical_selection.json"}')
+    print(f"Selection paper avec reserves: {len(review['wallets'])} wallets | {path / 'paper_review_selection.json'}")
     return contract

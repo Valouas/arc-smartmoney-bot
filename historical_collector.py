@@ -116,6 +116,7 @@ class HistoricalCollector:
         return {'eligible': graph.eligible(wallet), 'members': component(wallet),
                 'cluster': min(component(wallet)), 'funder': facts.funded_by if facts else None,
                 'shared_service': facts.shared_service if facts else False,
+                'null_funder': bool(facts and facts.null_funder and not facts.funded_by),
                 'independent_profitable_deployers': len(independent),
                 'unknown_profitable_deployers': len(metrics['profitable_tokens'])-sum(graph.eligible(d) for d in deployers.values()),
                 'checked_at': int(time.time())}
