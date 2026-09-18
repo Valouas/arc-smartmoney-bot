@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import signal
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -136,3 +137,105 @@ def test_graceful_shutdown_does_not_terminate_exited_or_unowned_processes(monkey
     p.send_signal.assert_called_once()
     ended.send_signal.assert_not_called()
     p.terminate.assert_not_called(); p.kill.assert_not_called()
+
+
+def events():
+    return [json.loads(line) for line in (run_all.LOGS/'supervisor.jsonl').read_text().splitlines()]
+
+
+def test_state_write_retries_transient_lock_without_changing_atomic_writer(local,monkeypatch):
+    write=Mock(side_effect=[PermissionError('secret URL'),PermissionError('secret URL'),None])
+    sleep=Mock()
+    monkeypatch.setattr(run_all,'save_state',write)
+    monkeypatch.setattr(run_all.time,'sleep',sleep)
+    publisher=run_all.StatePublisher()
+    assert publisher.publish({},None,'RUNNING')
+    assert write.call_count==3 and sleep.call_count==2
+    assert not publisher.degraded
+
+
+def test_long_state_lock_is_nonfatal_throttled_and_recovers(local,monkeypatch):
+    original=run_all.save_state
+    monkeypatch.setattr(run_all,'save_state',Mock(side_effect=PermissionError('alch_SECRET https://secret.example/key')))
+    monkeypatch.setattr(run_all.time,'sleep',lambda _:None)
+    monkeypatch.setattr(run_all.time,'monotonic',lambda:100)
+    publisher=run_all.StatePublisher()
+    assert not publisher.publish({},None,'RUNNING')
+    assert not publisher.publish({},None,'RUNNING')
+    failures=[e for e in events() if e['event']=='state_write_failed']
+    assert len(failures)==1 and failures[0]['category']=='PermissionError'
+    assert 'SECRET' not in json.dumps(events()) and 'secret.example' not in json.dumps(events())
+    monkeypatch.setattr(run_all,'save_state',original)
+    assert publisher.publish({},None,'RUNNING')
+    assert not publisher.degraded
+    assert events()[-1]['event']=='state_write_recovered'
+
+
+def test_heartbeat_failure_does_not_shutdown_workers_before_explicit_stop(local,cfg,monkeypatch):
+    monkeypatch.setattr(run_all,'preflight',lambda _:None)
+    monkeypatch.setattr(run_all,'prepare',lambda _:None)
+    monkeypatch.setattr(run_all,'tunnel',lambda _: 'https://example.ngrok.app/webhook/alchemy')
+    def launch(*_):
+        p=Mock(pid=123); p.poll.return_value=None; return p
+    monkeypatch.setattr(run_all,'launch',launch)
+    monkeypatch.setattr(run_all,'save_state',Mock(side_effect=PermissionError('locked')))
+    stop=Mock(); monkeypatch.setattr(run_all,'shutdown',stop)
+    cycles=[]
+    def sleep(delay):
+        if delay==1:
+            stop.assert_not_called()
+            cycles.append(1)
+            if len(cycles)==3: run_all.STOP.write_text('stop')
+    monkeypatch.setattr(run_all.time,'sleep',sleep)
+    run_all.supervise(cfg)
+    assert len(cycles)==3
+    stop.assert_called_once()
+    assert events()[-1]['event']=='supervisor_stopped'
+    assert events()[-1]['reason']=='stop_file'
+    assert not run_all.STOP.exists()
+
+
+def test_core_exit_reason_is_preserved_when_final_state_cannot_be_written(local,cfg,monkeypatch):
+    monkeypatch.setattr(run_all,'preflight',lambda _:None)
+    monkeypatch.setattr(run_all,'prepare',lambda _:None)
+    monkeypatch.setattr(run_all,'tunnel',lambda _: 'https://example.ngrok.app/webhook/alchemy')
+    def launch(command,path):
+        p=Mock(pid=123); p.poll.return_value=2 if command[-1]=='paper_copy' else None; return p
+    monkeypatch.setattr(run_all,'launch',launch)
+    monkeypatch.setattr(run_all,'shutdown',Mock())
+    monkeypatch.setattr(run_all,'save_state',Mock(side_effect=PermissionError('locked')))
+    monkeypatch.setattr(run_all.time,'sleep',lambda _:None)
+    with pytest.raises(RuntimeError,match='paper_copy est arrete'):
+        run_all.supervise(cfg)
+    exited=[e for e in events() if e['event']=='child_exited']
+    assert exited[0]['role']=='paper_copy' and exited[0]['exit_code']==2
+    assert events()[-1]['reason']=='core_worker_exit'
+
+
+def test_keyboard_interrupt_is_journaled_separately(local,cfg,monkeypatch):
+    monkeypatch.setattr(run_all,'preflight',lambda _:None)
+    monkeypatch.setattr(run_all,'prepare',lambda _:None)
+    monkeypatch.setattr(run_all,'launch',Mock(side_effect=KeyboardInterrupt()))
+    monkeypatch.setattr(run_all,'shutdown',Mock())
+    run_all.supervise(cfg)
+    assert events()[-1]['reason']=='keyboard_interrupt'
+
+
+def test_failed_journal_is_never_fatal(local,monkeypatch,capsys):
+    monkeypatch.setattr(run_all.Path,'open',Mock(side_effect=PermissionError('sensitive')))
+    run_all.record_event('supervisor_start')
+    assert 'Journal superviseur indisponible' in capsys.readouterr().out
+
+
+@pytest.mark.skipif(os.name!='nt',reason='Windows file sharing semantics')
+def test_actual_windows_reader_lock_preserves_json_and_recovers(local,monkeypatch):
+    run_all.save_state({},None,'RUNNING')
+    before=run_all.STATE.read_bytes()
+    monkeypatch.setattr(run_all.time,'sleep',lambda _:None)
+    publisher=run_all.StatePublisher()
+    with run_all.STATE.open('r'):
+        assert not publisher.publish({},None,'STOPPED')
+        assert run_all.STATE.read_bytes()==before
+        assert not list(run_all.STATE.parent.glob('run_all_state.json.*.tmp'))
+    assert publisher.publish({},None,'STOPPED')
+    assert json.loads(run_all.STATE.read_text())['status']=='STOPPED'

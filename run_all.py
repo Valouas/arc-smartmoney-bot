@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+import traceback
 import urllib.request
 from urllib.parse import urlsplit
 
@@ -23,6 +24,54 @@ STATE=Path('data/run_all_state.json')
 STOP=Path('data/run_all.stop')
 LOGS=Path('data/launcher_logs')
 ROLES=('launch_indexer','wallet_profiler','auto_discovery','bot','historical_analysis','alchemy_webhook','paper_copy','dashboard')
+
+
+def record_event(event, **details):
+    """Best-effort operational journal, never raw exceptions, URLs or commands."""
+    entry={'at':int(time.time()),'pid':os.getpid(),'event':event}
+    allowed={'role','child_pid','exit_code','reason','category','operation','errno','winerror','site'}
+    entry.update({k:v for k,v in details.items() if k in allowed and isinstance(v,(str,int,type(None)))})
+    try:
+        LOGS.mkdir(parents=True,exist_ok=True)
+        with (LOGS/'supervisor.jsonl').open('a',encoding='utf-8') as target:
+            target.write(json.dumps(entry,ensure_ascii=True)+'\n')
+    except OSError:
+        # Losing observability must never be turned into losing the scanners.
+        try: print('Journal superviseur indisponible | event='+event,flush=True)
+        except OSError: pass
+
+
+def error_fields(error):
+    frames=traceback.extract_tb(error.__traceback__)
+    return {'category':type(error).__name__,'errno':getattr(error,'errno',None),
+            'winerror':getattr(error,'winerror',None),
+            'site':Path(frames[-1].filename).name+':'+str(frames[-1].lineno) if frames else None}
+
+
+class StatePublisher:
+    """Dashboard heartbeat only: bounded retries, then retry on the next cycle."""
+    def __init__(self):
+        self.degraded=False
+        self.next_warning=0.0
+
+    def publish(self, children, url, status):
+        for attempt in range(3):
+            try:
+                save_state(children,url,status)
+                if self.degraded: record_event('state_write_recovered',operation='publish_state')
+                self.degraded=False
+                return True
+            except OSError as error:
+                if attempt<2:
+                    time.sleep(.05*(2**attempt))
+                    continue
+                if not self.degraded or time.monotonic()>=self.next_warning:
+                    record_event('state_write_failed',operation='publish_state',**error_fields(error))
+                    try: print('Etat du dashboard indisponible temporairement ; bots maintenus.',flush=True)
+                    except OSError: pass
+                    self.next_warning=time.monotonic()+60
+                self.degraded=True
+                return False
 
 
 def roles_for(cfg):
@@ -93,7 +142,9 @@ def launch(command,logfile):
 def shutdown(children,grace=25):
     """Stop only children we created; a reused tunnel is never in this list."""
     alive=[p for p in children.values() if p.poll() is None]
+    names={id(p):role for role,p in children.items()}
     for p in alive:
+        record_event('child_stop_signal',role=names[id(p)],child_pid=p.pid)
         try: p.send_signal(signal.CTRL_BREAK_EVENT if os.name=='nt' else signal.SIGTERM)
         except OSError: pass
     deadline=time.monotonic()+grace
@@ -101,6 +152,7 @@ def shutdown(children,grace=25):
         time.sleep(.2)
     for p in alive:
         if p.poll() is None:
+            record_event('child_force_stop',role=names[id(p)],child_pid=p.pid,reason='grace_timeout')
             if os.name=='nt':
                 # The venv redirector and its real Python child form one owned tree.
                 subprocess.run(['taskkill','/PID',str(p.pid),'/T','/F'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -136,15 +188,19 @@ def save_state(children,url,status):
 
 
 def supervise(cfg):
+    record_event('supervisor_start')
     preflight(cfg)
     LOGS.mkdir(parents=True,exist_ok=True)
     STOP.unlink(missing_ok=True)
     prepare(cfg)
-    children={}; url=None; warned=set()
+    children={}; url=None; warned=set(); publisher=StatePublisher()
+    reason='startup_failure'; operation='launch_child'
     try:
         for role in roles_for(cfg):
             children[role]=launch([sys.executable,'-u',str(ROOT/'run_all.py'),'--worker',role],LOGS/(role+'.log'))
+            record_event('child_started',role=role,child_pid=children[role].pid)
             print('Demarre : '+role,flush=True)
+        operation='start_tunnel'
         if cfg.alchemy_webhook_enabled:
             url=tunnel(cfg.alchemy_webhook_port)
             if url: print('Tunnel ngrok existant conserve : '+url,flush=True)
@@ -152,27 +208,48 @@ def supervise(cfg):
                 binary=shutil.which('ngrok')
                 if binary:
                     children['ngrok']=launch([binary,'http','http://127.0.0.1:'+str(cfg.alchemy_webhook_port)],LOGS/'ngrok.log')
+                    record_event('child_started',role='ngrok',child_pid=children['ngrok'].pid)
                 else: print('Ngrok introuvable. Les scanners RPC restent actifs.',flush=True)
         print('Ensemble lance. Ctrl+C ou ARRETER_BOT.bat pour arreter.',flush=True)
         print('Tableau de bord : http://127.0.0.1:8001 | TABLEAU_DE_BORD.bat',flush=True)
         print('Journaux : data/launcher_logs | Etat : ETAT_BOT.bat',flush=True)
+        record_event('supervisor_running')
+        reason='unexpected_error'
         while not STOP.exists():
+            operation='check_children'
             for role,p in children.items():
                 if p.poll() is None or role in warned: continue
                 warned.add(role)
+                record_event('child_exited',role=role,child_pid=p.pid,exit_code=p.poll())
                 if role in ('ngrok','alchemy_webhook','dashboard'):
                     print(role+' indisponible ; scanners RPC maintenus. Consulter son journal.',flush=True)
-                else: raise RuntimeError(role+' est arrete. Consulter data/launcher_logs/'+role+'.log')
+                else:
+                    reason='core_worker_exit'
+                    raise RuntimeError(role+' est arrete. Consulter data/launcher_logs/'+role+'.log')
+            operation='check_tunnel'
             if cfg.alchemy_webhook_enabled and not url:
                 url=tunnel(cfg.alchemy_webhook_port)
                 if url: print('URL Alchemy : '+url,flush=True)
-            save_state(children,url,'RUNNING')
+            operation='publish_state'
+            publisher.publish(children,url,'RUNNING')
+            operation='wait'
             time.sleep(1)
-    except KeyboardInterrupt: print('Arret en cours...',flush=True)
+        reason='stop_file'
+        record_event('stop_requested',reason=reason)
+    except KeyboardInterrupt:
+        reason='keyboard_interrupt'
+        record_event('stop_requested',reason=reason)
+        print('Arret en cours...',flush=True)
+    except Exception as error:
+        record_event('supervisor_error',operation=operation,reason=reason,**error_fields(error))
+        raise
     finally:
+        record_event('shutdown_started',reason=reason)
         shutdown(children)
-        save_state(children,url,'STOPPED')
-        STOP.unlink(missing_ok=True)
+        publisher.publish(children,url,'STOPPED')
+        try: STOP.unlink(missing_ok=True)
+        except OSError as error: record_event('stop_file_cleanup_failed',**error_fields(error))
+        record_event('supervisor_stopped',reason=reason)
 
 
 def main(argv=None):
@@ -187,6 +264,7 @@ def main(argv=None):
     if args.stop:
         if not busy(LOCK): print('Aucun ensemble gere par ce lanceur.'); return 0
         STOP.write_text('stop',encoding='ascii')
+        record_event('stop_command_issued',reason='cli_stop')
         print('Arret demande ; attente de fermeture des processus...',flush=True)
         deadline=time.monotonic()+40
         while busy(LOCK) and time.monotonic()<deadline: time.sleep(.5)
@@ -203,8 +281,10 @@ def main(argv=None):
         with ProcessLock(LOCK): supervise(SETTINGS)
         return 0
     except RuntimeError as error:
+        record_event('launcher_failed',**error_fields(error))
         print(str(error),flush=True); return 1
     except Exception as error:
+        record_event('launcher_failed',**error_fields(error))
         print('Lancement impossible | category='+type(error).__name__,flush=True); return 1
 
 

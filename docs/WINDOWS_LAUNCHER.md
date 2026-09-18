@@ -40,6 +40,21 @@ authentifie les notifications et ne remplace pas un acces de gestion Alchemy.
 `ETAT_BOT.bat` affiche l'etat du superviseur, du V4 et des portefeuilles paper.
 Les journaux se trouvent dans `data/launcher_logs/`, un fichier par composant.
 
+Le journal `data/launcher_logs/supervisor.jsonl` conserve les demarrages, les
+sorties de composants, leurs codes, la raison de l'arret (commande via fichier,
+interruption clavier, composant principal arrete, exception) et les fermetures
+forcees apres le delai de grace. Les erreurs indiquent categorie, operation,
+errno/winerror et emplacement de code, sans message brut, commande ou secret.
+
+Sous Windows, un lecteur peut temporairement empecher le remplacement atomique
+de `data/run_all_state.json`. Le lanceur retente trois fois, puis conserve les
+bots actifs et retente au cycle suivant. Il journalise cette degradation au plus
+une fois par minute et son retablissement. Le dashboard affichera un etat inconnu
+si son heartbeat devient perime. Cette tolerance concerne uniquement le fichier
+d'affichage et le journal du superviseur ; les bases et les donnees de trading
+conservent leurs garde-fous. Aucun redemarrage automatique d'un composant en erreur
+n'est ajoute, notamment apres un arret de securite du paper.
+
 `ARRETER_BOT.bat` demande l'arret du superviseur via un fichier local. Chaque
 processus cree recoit un signal d'interruption, dispose de 25 secondes pour
 fermer ses transactions et liberer ses verrous, puis peut etre termine si bloque.
