@@ -248,6 +248,36 @@ Ce correctif ne prouve pas que les wallets ainsi separes sont independants.
 
 ## Commandes PowerShell
 
+### Debit de reconstruction
+
+`HISTORICAL_RPC_WORKERS` (1 par defaut, maximum 16) permet de reconstruire
+plusieurs transactions independantes en parallele. Chaque thread possede son
+client RPC et sa session HTTP : transactions, recus, blocs, metadata et preuves
+DEX passent toujours par le budget RPC partage et les retries existants.
+Pour un RPC payant, 8 lecteurs constituent un point de depart ; conserver 1 pour
+un RPC public. Le fallback conserve son propre budget conservateur.
+
+Le nombre de transactions en vol est borne au nombre de lecteurs. SQLite reste
+accessible uniquement depuis le thread principal : les resultats sont enregistres
+dans l'ordre de la file existante. Apres un echec, seul le prefixe entierement
+valide reste enregistre ; la transaction echouee et les suivantes sont reprises.
+La fin du snapshot exige toujours tous les payloads, la verification du bloc de
+coupure et les controles d'identite. Le calcul FIFO reste trie par bloc et index
+de transaction, independamment de l'ordre d'arrivee des reponses RPC.
+
+`HISTORICAL_POLL_SECONDS` (60 par defaut, minimum 1) regle uniquement la pause
+historique entre cycles. Pour accelerer un rattrapage sur un fournisseur payant,
+essayer 10 secondes et `HISTORICAL_TRANSACTIONS_PER_STEP=50`. Cela peut aussi
+augmenter le nombre de pages Arcscan traitees par minute ; les controles de
+pagination et de transport restent inchanges. Les journaux distinguent le temps
+de collecte, le temps de rapport et la pause. Les seuils de selection ne changent pas.
+
+Mesure locale du 19 septembre 2026, sur les memes 24 transactions et sans ecriture
+en base : 12,688 s avec 1 lecteur, 5,875 s avec 4, 5,688 s avec 8. Les payloads et
+metriques sont identiques. Ce petit echantillon n'est pas une garantie de debit
+global : latence Arcscan, taille des historiques et activite concurrente restent
+variables. Le renouvellement des snapshots existant n'est pas modifie ici.
+
 ```powershell
 .\.venv\Scripts\python.exe historical_analysis.py --once
 .\.venv\Scripts\python.exe wallet_ranking.py --historical

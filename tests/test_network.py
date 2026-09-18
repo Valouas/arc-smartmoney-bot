@@ -13,7 +13,7 @@ import pytest
 import requests
 from arcscan import ArcscanClient
 from discovery_parser import extract_transfer_rows, extract_tx_hashes
-from launch_parser import extract_contract_candidates, extract_tokens_from_transfers
+from launch_parser import parse_deployment_page, extract_tokens_from_transfers
 
 pytestmark = [pytest.mark.network, pytest.mark.skipif(os.getenv('ARC_RUN_NETWORK') != '1', reason='opt-in live public network')]
 USDC='0x3600000000000000000000000000000000000000'
@@ -51,7 +51,12 @@ def test_live_endpoint_contracts(api,kind):
         assert 'coverage' in result['page']
         if result['items']: assert extract_tx_hashes(result)
     elif kind=='contracts':
-        assert extract_contract_candidates(api.explore_contracts(limit=1,filter_name='token'))
+        result = api.explore_contracts(limit=1,filter_name='token')
+        # The newest deployment can legitimately be ERC-721 or unclassified.
+        # Use the strict production schema parser, not a nonempty ERC-20 filter.
+        candidates, keys = parse_deployment_page(result)
+        assert keys and len(keys) == len(result['items'])
+        assert all(c['is_erc20'] and c['address'] in keys for c in candidates)
     elif kind=='transfers':
         assert extract_tokens_from_transfers(api.explore_token_transfers(limit=1))
     elif kind=='token_transfers':

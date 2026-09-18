@@ -1,6 +1,7 @@
 """Resumable, fair historical reconstruction independent of scanner checkpoints."""
 import json
 import time
+from contextlib import closing
 from collections import deque
 from decimal import Decimal
 
@@ -9,8 +10,9 @@ from decoder import classify_trade, wallet_token_deltas, hex_value
 from discovery_parser import txhash
 from historical_metrics import analyze
 from historical_store import VERSION, initialize
+from historical_prefetch import ordered_reads, read_transaction
 from identity_graph import IdentityGraph
-from rpc import USDC_ERC20, NATIVE_MIRROR
+from rpc import ArcRPC, USDC_ERC20, NATIVE_MIRROR
 from rpc_transport import RPCError
 from wallet_policy import is_dex_infrastructure
 
@@ -43,8 +45,9 @@ def parse_page(data, cutoff, seen):
 
 
 class HistoricalCollector:
-    def __init__(self, storage, rpc, arc, cfg):
+    def __init__(self, storage, rpc, arc, cfg, *, rpc_factory=None):
         self.storage, self.db, self.rpc, self.arc, self.cfg = storage, storage.db, rpc, arc, cfg
+        self.rpc_factory = rpc_factory or (lambda: ArcRPC(cfg.rpc_url, cfg.chain_id))
         initialize(self.db)
 
     def start(self, wallet, now):
@@ -60,12 +63,11 @@ class HistoricalCollector:
             self.db.executemany('INSERT OR IGNORE INTO historical_transactions(wallet,tx_hash) VALUES(?,?)',
                                 [(wallet, h) for h in hashes])
 
-    def transaction(self, wallet, h, run):
-        tx = self.rpc.w3.eth.get_transaction(h)
+    def transaction(self, wallet, h, run, reads=None, rpc=None):
+        rpc = self.rpc if rpc is None else rpc
+        tx, receipt, block = reads if reads is not None else read_transaction(rpc, h, run['cutoff_block'])
         if int(tx['blockNumber']) > run['cutoff_block']:
             return {'tx_hash': h, 'outside_snapshot': True}
-        receipt = self.rpc.get_receipt(h)
-        block = self.rpc.get_block(int(tx['blockNumber']), False)
         if (receipt['blockHash'] != block['hash'] or receipt['blockNumber'] != tx['blockNumber']
                 or tx.get('blockHash') != block['hash']):
             raise ArcscanError('historical block mismatch')
@@ -80,7 +82,7 @@ class HistoricalCollector:
             if str(tx.get('from', '')).lower() != wallet: out['gas_usdc'] = '0'
             return out
         try:
-            trades = classify_trade(self.rpc, receipt, wallet, 1e-18,
+            trades = classify_trade(rpc, receipt, wallet, 1e-18,
                 native_value_wei=int(tx.get('value', 0)) if str(tx.get('from', '')).lower() == wallet else 0,
                 strict=True)
             if any(t['confirmation_eligible'] is not True for t in trades):
@@ -99,6 +101,28 @@ class HistoricalCollector:
         except (ValueError, KeyError, TypeError, OverflowError):
             out['error'] = 'unsupported_or_ambiguous_reconstruction'
         return out
+
+    def decode_queue(self, wallet, queue, run):
+        """Decode independently; persist only the ordered, validated prefix here."""
+        def persist(h, payload):
+            with self.db:
+                self.db.execute('UPDATE historical_transactions SET payload=? WHERE wallet=? AND tx_hash=?',
+                                (json.dumps(payload, allow_nan=False), wallet, h))
+
+        workers = min(self.cfg.historical_rpc_workers, len(queue))
+        if workers <= 1:
+            for row in queue:
+                persist(row[0], self.transaction(wallet, row[0], run))
+            return
+        # Copy the snapshot before dispatch; workers never touch SQLite, scoring,
+        # identity state or checkpoints. Metadata/code reads use their own RPC.
+        snapshot = dict(run)
+        def decode(h, bundle, rpc):
+            return self.transaction(wallet, h, snapshot, reads=bundle, rpc=rpc)
+        with closing(ordered_reads([r[0] for r in queue], run['cutoff_block'], workers,
+                                   self.rpc_factory, transform=decode)) as reads:
+            for h, payload in reads:
+                persist(h, payload)
 
     def identity(self, wallet, metrics):
         deployers = {}
@@ -147,11 +171,7 @@ class HistoricalCollector:
             else:
                 queue = self.db.execute('SELECT tx_hash FROM historical_transactions WHERE wallet=? AND payload IS NULL ORDER BY tx_hash LIMIT ?',
                                         (wallet, self.cfg.historical_transactions_per_step)).fetchall()
-                for row in queue:
-                    payload = self.transaction(wallet, row[0], run)
-                    with self.db:
-                        self.db.execute('UPDATE historical_transactions SET payload=? WHERE wallet=? AND tx_hash=?',
-                                        (json.dumps(payload, allow_nan=False), wallet, row[0]))
+                self.decode_queue(wallet, queue, run)
                 pending = self.db.execute('SELECT 1 FROM historical_transactions WHERE wallet=? AND payload IS NULL LIMIT 1', (wallet,)).fetchone()
                 if not pending:
                     block = self.rpc.get_block(run['cutoff_block'], False)

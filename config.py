@@ -59,6 +59,8 @@ class Settings:
     discovery_poll_seconds: int = _i("DISCOVERY_POLL_SECONDS", 60)
     historical_analysis_enabled: bool = os.getenv('HISTORICAL_ANALYSIS_ENABLED', 'false').lower() == 'true'
     historical_transactions_per_step: int = _i('HISTORICAL_TRANSACTIONS_PER_STEP', 10)
+    historical_rpc_workers: int = _i('HISTORICAL_RPC_WORKERS', 1)
+    historical_poll_seconds: float = _f('HISTORICAL_POLL_SECONDS', 60)
     historical_refresh_seconds: int = _i('HISTORICAL_REFRESH_SECONDS', 21600)
     historical_max_age_hours: int = _i('HISTORICAL_MAX_AGE_HOURS', 48)
     historical_period_hours: int = _i('HISTORICAL_PERIOD_HOURS', 6)
@@ -102,6 +104,10 @@ class Settings:
     alchemy_webhook_signing_key: str = field(default=os.getenv('ALCHEMY_WEBHOOK_SIGNING_KEY', ''),repr=False)
 
     def __post_init__(self):
+        if not 1 <= self.historical_rpc_workers <= 16:
+            raise ValueError('HISTORICAL_RPC_WORKERS must be between 1 and 16')
+        if not math.isfinite(self.historical_poll_seconds) or self.historical_poll_seconds < 1:
+            raise ValueError('HISTORICAL_POLL_SECONDS must be finite and at least 1')
         if not 1 <= self.alchemy_webhook_port <= 65535:
             raise ValueError('Invalid webhook port')
         if (min(self.historical_transactions_per_step, self.historical_refresh_seconds,

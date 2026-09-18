@@ -37,10 +37,16 @@ def main(argv=None):
             rpc.sanity_check()
             collector = HistoricalCollector(db, rpc, arc, SETTINGS)
             while True:
-                print(collector.cycle(), flush=True)
+                started = time.monotonic()
+                result = collector.cycle()
+                collected = time.monotonic()
                 report()
+                print({**result, 'collection_seconds': round(collected-started, 3),
+                       'report_seconds': round(time.monotonic()-collected, 3),
+                       'rpc_workers': SETTINGS.historical_rpc_workers,
+                       'pause_seconds': 0 if args.once else SETTINGS.historical_poll_seconds}, flush=True)
                 if args.once: return 0
-                time.sleep(SETTINGS.discovery_poll_seconds)
+                time.sleep(SETTINGS.historical_poll_seconds)
         except KeyboardInterrupt:
             return 0
         finally:
