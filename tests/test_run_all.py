@@ -130,7 +130,7 @@ def test_reuse_only_tunnel_pointing_at_our_local_port(monkeypatch,upstream,expec
     assert bool(run_all.tunnel(8000)) is expected
 
 
-def test_graceful_shutdown_does_not_terminate_exited_or_unowned_processes(monkeypatch):
+def test_graceful_shutdown_does_not_terminate_exited_or_unowned_processes(local,monkeypatch):
     p=Mock(); p.poll.side_effect=[None,0,0]
     ended=Mock(); ended.poll.return_value=0
     run_all.shutdown({'bot':p,'finished':ended},grace=0)
