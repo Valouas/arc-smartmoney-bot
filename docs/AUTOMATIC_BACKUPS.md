@@ -2,6 +2,7 @@
 
 Le lanceur `LANCER_BOT.bat` / `run_all.py` sauvegarde les bases d'analyse et de
 paper copy avant de lancer les processus, puis supervise `automatic_backup.py`.
+Le cache RPC brut `data/rpc_cache.sqlite3` est aussi sauvegardé lorsqu'il existe.
 Par défaut, une sauvegarde est créée chaque heure dans `data/automatic_backups`.
 Les 24 dernières versions et la plus récente de chacun des sept derniers jours
 disponibles sont conservées. Le nettoyage ne touche ni les archives de récupération

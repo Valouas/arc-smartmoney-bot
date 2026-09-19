@@ -271,7 +271,7 @@ class ResilientRPCProvider(JSONBaseProvider):
     monthly quota refusal, permits switching.
     """
     def __init__(self, url, chain_id, limiter, fallback_urls=(), *, session=None, sleep=time.sleep,
-                 fallback_limiter=None):
+                 fallback_limiter=None, cache=None):
         super().__init__()
         self.urls = tuple(dict.fromkeys([url, *fallback_urls]))
         self.chain_id, self.limiter = chain_id, limiter
@@ -283,6 +283,36 @@ class ResilientRPCProvider(JSONBaseProvider):
         self.active = 0
         self.verified = set()
         self.global_ccip_read_enabled = False
+        if cache is None:
+            from config import SETTINGS
+            if SETTINGS.rpc_cache_enabled:
+                from rpc_cache import RPCCache
+                cache = RPCCache(SETTINGS.rpc_cache_file)
+        self.cache = cache
+
+    def _finalized_for_cache(self,index):
+        """Optional feature probe; explicit canonical checks remain uncached."""
+        network=self.cache.network(self.chain_id,self.urls[index])
+        previous=self.cache.finality(network)
+        now=time.time()
+        if previous and 0 <= now-previous[2] < 60:
+            return previous[0] if previous[3] else -1
+        try:
+            latest=self._request(index,'eth_getBlockByNumber',['finalized',False])['result']
+            number=int(latest['number'],16)
+            if previous and previous[0]>=0:
+                anchor=self._request(index,'eth_getBlockByNumber',[hex(previous[0]),False])['result']
+                if number<previous[0] or anchor['hash']!=previous[1]:
+                    raise self._error('eth_getBlockByNumber','finality_changed',1,index)
+        except RPCError as error:
+            if error.category=='finality_changed': raise
+            # An unsupported or unavailable finalized tag only disables caching.
+            # The actual requested read still has to succeed normally.
+            self.cache.save_finality(network,previous[0] if previous else -1,
+                                     previous[1] if previous else '',now,available=False)
+            return -1
+        self.cache.save_finality(network,number,latest['hash'],now)
+        return number
 
     def label(self, index):
         return 'primary' if index == 0 else f'fallback-{index}'
@@ -373,7 +403,21 @@ class ResilientRPCProvider(JSONBaseProvider):
                     if method == 'eth_chainId':
                         self.active = index
                         return identity
+                finalized=-1
+                if self.cache and method in {'eth_getTransactionByHash','eth_getTransactionReceipt','eth_getBlockByHash'}:
+                    try:
+                        finalized=self._finalized_for_cache(index)
+                        cached=self.cache.get(self.chain_id,method,params,finalized) if finalized>=0 else None
+                        if cached is not None:
+                            self.active=index
+                            return {'jsonrpc':'2.0','id':json.loads(self.encode_rpc_request(method,params))['id'],'result':cached}
+                    except (OSError,sqlite3.Error):
+                        log.warning('RPC cache unavailable | method=%s',method)
+                        finalized=-1
                 result = self._request(index, method, params)
+                if self.cache and finalized>=0 and 'result' in result:
+                    try: self.cache.put(self.chain_id,method,params,result['result'],finalized)
+                    except (OSError,sqlite3.Error): log.warning('RPC cache write unavailable | method=%s',method)
                 # Chain identity remains checked when callers explicitly ask.
                 if method == 'eth_chainId' and int(result['result'], 16) != self.chain_id:
                     self.verified.discard(index)

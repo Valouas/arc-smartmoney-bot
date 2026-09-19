@@ -23,6 +23,7 @@ from alert_outbox import AlertOutbox
 from process_lock import ProcessLock
 from wallet_policy import is_dex_infrastructure
 from capital_allocation import event_sizing, sizing_policy
+from scanner_ranges import prepare_window
 
 logging.basicConfig(level=getattr(logging, SETTINGS.log_level, logging.INFO), format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("arc-bot")
@@ -75,12 +76,21 @@ class ArcSmartMoneyBot:
                 if self.webhooks: self.webhooks.drain()
                 head = self.rpc.block_number()
                 while next_block <= head:
-                    self.process_block(next_block)
-                    next_block += 1
-                    self.outbox.flush(limit=2)
-                    if self.webhooks:
-                        self.refresh_watch()
-                        self.webhooks.drain()
+                    self.watch = {w:i for w,i in self.watch.items() if not is_dex_infrastructure(w,self.cfg)}
+                    watched = set(self.watch)
+                    self.db.begin_block(next_block)
+                    last = min(head,next_block+self.cfg.scanner_log_window_blocks-1)
+                    prepared = prepare_window(self.rpc,next_block,last,watched)
+                    for n,block,participants in prepared:
+                        # A webhook refresh can change the effective watchlist.
+                        # Re-stage the remaining blocks for the new set of wallets.
+                        if set(self.watch) != watched: break
+                        self.process_block(n,prepared=(block,participants))
+                        next_block = n+1
+                        self.outbox.flush(limit=2)
+                        if self.webhooks:
+                            self.refresh_watch()
+                            self.webhooks.drain()
                 if time.time() >= stop_check_at:
                     for x in self.paper.evaluate_stops(self.market):
                         msg = f"🧪 {x['action']} {x['symbol']} | PnL {x['pnl_usd']:+.2f}$ | {x['reason']}"
@@ -96,13 +106,15 @@ class ArcSmartMoneyBot:
             except Exception as e:
                 log.exception("loop error: %s", e); time.sleep(2)
 
-    def process_block(self, n: int):
+    def process_block(self, n: int, prepared=None):
         self.watch = {wallet:info for wallet,info in self.watch.items()
                       if not is_dex_infrastructure(wallet,self.cfg)}
         # Persist work to retry, not completion. This also protects the first
         # START_BLOCK=latest block when the process dies before any checkpoint.
         self.db.begin_block(n)
-        block = self.rpc.get_block(n, full_transactions=True)
+        block = self.rpc.get_block(n, full_transactions=True) if prepared is None else prepared[0]
+        if prepared is not None and self.rpc.get_block(n,False)['hash'] != block['hash']:
+            raise RPCError('eth_getBlockByNumber','block_mismatch',1,'primary')
         ts = int(block["timestamp"])
         if not getattr(self, "_clusters_restored", False):
             if hasattr(self, "clusters"):
@@ -110,8 +122,9 @@ class ArcSmartMoneyBot:
                     if is_dex_infrastructure(prior.wallet,self.cfg): continue
                     self.clusters.add(prior)
             self._clusters_restored = True
-        participants = (self.rpc.watched_participants(n, list(self.watch), block['hash'])
-                        if block.get('hash') is not None else self.rpc.watched_participants(n, list(self.watch)))
+        participants = prepared[1] if prepared is not None else (
+            self.rpc.watched_participants(n, list(self.watch), block['hash'])
+            if block.get('hash') is not None else self.rpc.watched_participants(n, list(self.watch)))
         for tx in block["transactions"]:
             tx_hash = Web3.to_hex(tx["hash"])
             wallets = set(participants.get(tx_hash.lower(), []))

@@ -20,6 +20,9 @@ class Settings:
     rpc_compute_units_per_second: float = _f("ARC_RPC_COMPUTE_UNITS_PER_SECOND", 0)
     rpc_fallback_requests_per_second: float = _f("ARC_RPC_FALLBACK_REQUESTS_PER_SECOND", 2)
     rpc_rate_limit_file: str = os.getenv("ARC_RPC_RATE_LIMIT_FILE", "data/rpc_rate_limit.sqlite3")
+    rpc_cache_enabled: bool = os.getenv('ARC_RPC_CACHE_ENABLED','false').lower() == 'true'
+    rpc_cache_file: str = os.getenv('ARC_RPC_CACHE_FILE','data/rpc_cache.sqlite3')
+    scanner_log_window_blocks: int = _i('SCANNER_LOG_WINDOW_BLOCKS',10)
     automatic_backup_enabled: bool = os.getenv('AUTOMATIC_BACKUP_ENABLED', 'true').lower() == 'true'
     automatic_backup_directory: str = os.getenv('AUTOMATIC_BACKUP_DIRECTORY', 'data/automatic_backups')
     automatic_backup_interval_seconds: int = _i('AUTOMATIC_BACKUP_INTERVAL_SECONDS', 3600)
@@ -112,6 +115,8 @@ class Settings:
     alchemy_webhook_signing_key: str = field(default=os.getenv('ALCHEMY_WEBHOOK_SIGNING_KEY', ''),repr=False)
 
     def __post_init__(self):
+        if not 1 <= self.scanner_log_window_blocks <= 10:
+            raise ValueError('SCANNER_LOG_WINDOW_BLOCKS must be between 1 and 10')
         if (self.automatic_backup_interval_seconds < 60 or self.automatic_backup_keep_last < 2
                 or self.automatic_backup_keep_daily < 1 or self.automatic_backup_timeout_seconds < 1
                 or self.automatic_backup_reserve_mb < 0
