@@ -42,11 +42,20 @@ def build_report(path, cfg, now=None):
         wallets = set(candidates) | {r[0].lower() for r in db.execute('SELECT wallet FROM wallet_profiles')}
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         runs = {r['wallet']: dict(r) for r in db.execute('SELECT * FROM historical_runs')} if 'historical_runs' in tables else {}
+        saved = {r['wallet']: dict(r) for r in db.execute('SELECT * FROM historical_snapshots WHERE invalidated=0')} if 'historical_snapshots' in tables else {}
         rows = []
         for wallet in sorted(wallets):
             run = runs.get(wallet, {})
-            transactions = [json.loads(r[0]) for r in db.execute('SELECT payload FROM historical_transactions WHERE wallet=? AND payload IS NOT NULL', (wallet,))] if run else []
-            queued = db.execute('SELECT COUNT(*) FROM historical_transactions WHERE wallet=?', (wallet,)).fetchone()[0] if run else 0
+            working_run = run
+            work = db.execute('SELECT COUNT(*),COUNT(payload) FROM historical_transactions WHERE wallet=?', (wallet,)).fetchone() if run else (0,0)
+            retained = bool(wallet in saved and not (run.get('version') == VERSION and run.get('phase') == 'COMPLETE'))
+            if retained:
+                run = json.loads(saved[wallet]['run'])
+                table = 'historical_snapshot_transactions'
+            else:
+                table = 'historical_transactions'
+            transactions = [json.loads(r[0]) for r in db.execute(f'SELECT payload FROM {table} WHERE wallet=? AND payload IS NOT NULL', (wallet,))] if run else []
+            queued = db.execute(f'SELECT COUNT(*) FROM {table} WHERE wallet=?', (wallet,)).fetchone()[0] if run else 0
             decoded = len(transactions)
             current = run.get('version') == VERSION
             complete = current and run.get('phase') == 'COMPLETE'
@@ -61,6 +70,10 @@ def build_report(path, cfg, now=None):
                 identity={**identity,'eligible':False,'members':[wallet],'cluster':None}
                 if identity.get('funder')==ZERO_ADDRESS: identity['funder']=None
             category, reasons = qualify(metrics, run, identity, wallet in excluded, cfg, now)
+            expires_at = min((run.get('completed_at') or 0) + cfg.historical_refresh_seconds if retained else now+cfg.historical_refresh_seconds,
+                             run.get('cutoff_at', 0)+cfg.historical_max_age_hours*3600)
+            if retained and expires_at <= now:
+                reasons.append('retained_selection_expired')
             if wallet not in candidates:
                 category = 'EXCLUDED' if wallet in excluded else 'WATCH'
                 reasons.append('no_discovery_candidate')
@@ -82,6 +95,12 @@ def build_report(path, cfg, now=None):
                          'analysis_status': analysis_status, 'performance_stage': stage,
                          'metrics_status': metric_status, 'qualification_evaluated': complete,
                          'data_complete': metric_status == 'COMPLETE', 'report_reasons': report_reasons,
+                         'using_retained_snapshot': retained,
+                         'refresh_phase': working_run.get('phase', 'NOT_STARTED'),
+                         'refresh_error': working_run.get('error'),
+                         'refresh_started_at': working_run.get('started_at'),
+                         'working_transactions_queued': work[0], 'working_transactions_decoded': work[1],
+                         'working_transactions_pending': work[0]-work[1],
                          'transactions_queued': queued, 'transactions_decoded': decoded,
                          'transactions_pending': queued-decoded,
                          'decoding_progress_pct': (100*decoded/queued if queued else 100.0)
@@ -100,9 +119,9 @@ def build_report(path, cfg, now=None):
                          'independent_profitable_deployers': identity.get('independent_profitable_deployers', 0),
                          'funder': identity.get('funder'), 'shared_service': identity.get('shared_service'),
                          'infrastructure_excluded': wallet in excluded,
-                         'paper_selection_eligible': category == 'HISTORICALLY_QUALIFIED',
+                         'paper_selection_eligible': category == 'HISTORICALLY_QUALIFIED' and expires_at > now,
                          'live_signal_authority': False, 'blocking_reasons': reasons,
-                         'expires_at': min(now+cfg.historical_refresh_seconds, run.get('cutoff_at', 0)+cfg.historical_max_age_hours*3600),
+                         'expires_at': expires_at,
                          **metrics})
     # Merge persisted components rather than treating different representatives
     # of the same funding component as independent identities.
@@ -142,6 +161,8 @@ def publish(rows, cfg, output_dir='data', top=20, diverse=False, now=None):
                'performance_stages': dict(Counter(r['performance_stage'] for r in rows)),
                'completed_snapshots': sum(r['analysis_status'] == 'ANALYZED' for r in rows),
                'complete_data_wallets': sum(r['data_complete'] for r in rows),
+               'retained_snapshots': sum(r['using_retained_snapshot'] for r in rows),
+               'working_transactions_pending': sum(r['working_transactions_pending'] for r in rows),
                'analyzed_wallets_with_open_positions': sum(r['analysis_status'] == 'ANALYZED' and bool(r['open_positions_count']) for r in rows),
                'wallets_with_closed_only_bias': sum(r['closed_only_bias'] is True for r in rows),
                'wallets_with_uncovered_open_cost': sum(r['open_inventory_risk'] == 'OPEN_COST_NOT_COVERED' for r in rows),
@@ -194,6 +215,9 @@ def publish(rows, cfg, output_dir='data', top=20, diverse=False, now=None):
               f"{display(r['buys'])} | {display(r['closed_positions'])} | "
               f"{display(r['gross_realized_pnl_usdc'], True)} | {display(r['conservative_pnl_usdc'], True)} | {r['metrics_status']}")
         print('  '+(', '.join(r['report_reasons']) or 'qualifie historiquement; selection paper seulement'))
+        if r['using_retained_snapshot']:
+            print(f"  Derniere analyse terminee conservee | actualisation {r['refresh_phase']} : "
+                  f"{r['working_transactions_decoded']}/{r['working_transactions_queued']} transactions")
         if r['analysis_status']=='ANALYZED':
             print('  Paper avec reserves: '+('ADMIS' if r['paper_review_eligible'] else 'NON ADMIS')+
                   ' | '+(', '.join(r['paper_review_warnings'] if r['paper_review_eligible'] else r['paper_review_blockers']) or 'aucune reserve'))

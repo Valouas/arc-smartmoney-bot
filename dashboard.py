@@ -19,7 +19,8 @@ COMPONENTS = ('launch_indexer', 'wallet_profiler', 'auto_discovery', 'bot',
 HISTORY_FIELDS = ('wallet', 'historical_class', 'analysis_status', 'metrics_status',
                   'buys', 'closed_positions', 'open_positions_count', 'conservative_pnl_usdc',
                   'conservative_return', 'identity_cluster_size', 'paper_review_eligible',
-                  'concentration_risk', 'snapshot_at')
+                  'concentration_risk', 'snapshot_at', 'using_retained_snapshot',
+                  'refresh_phase', 'working_transactions_decoded', 'working_transactions_queued')
 
 
 @contextmanager
@@ -122,6 +123,23 @@ def analysis_snapshot(path):
         if 'historical_transactions' in tables:
             r = db.execute('SELECT COUNT(*),COUNT(payload) FROM historical_transactions').fetchone()
             result['transactions'] = {'queued': r[0], 'decoded': r[1], 'pending': r[0] - r[1]}
+            if 'historical_snapshots' in tables and 'historical_snapshot_transactions' in tables:
+                retained_wallets = {r[0] for r in db.execute('SELECT wallet FROM historical_snapshots WHERE invalidated=0')}
+                retained = len(retained_wallets)
+                result['working_history'] = result['history']
+                result['history'] = dict(Counter('COMPLETE' if w in retained_wallets else
+                    'WAITING' if w not in runs or runs[w]['version'] != VERSION else
+                    'COMPLETE' if runs[w]['phase'] == 'COMPLETE' else 'IN_PROGRESS' for w in merged))
+                total = db.execute('''SELECT COUNT(*),COALESCE(SUM(decoded),0) FROM (
+                    SELECT wallet,tx_hash,MAX(decoded) decoded FROM (
+                        SELECT wallet,tx_hash,payload IS NOT NULL decoded FROM historical_transactions
+                        UNION ALL
+                        SELECT t.wallet,t.tx_hash,1 FROM historical_snapshot_transactions t
+                        JOIN historical_snapshots s ON s.wallet=t.wallet WHERE s.invalidated=0
+                    ) GROUP BY wallet,tx_hash)''').fetchone()
+                result['transactions'].update(working_queued=r[0], working_decoded=r[1], working_pending=r[0]-r[1],
+                                              queued=total[0], decoded=total[1], pending=total[0]-total[1],
+                                              retained_snapshots=retained)
         if 'scanner_state' in tables:
             result['scanner'] = {r[0]: r[1] for r in db.execute("SELECT key,value FROM scanner_state WHERE key IN ('next_block','pending_block')")}
         if 'alchemy_jobs' in tables:
@@ -140,9 +158,11 @@ def history_snapshot(path):
         rows = [{k: r.get(k) or None for k in HISTORY_FIELDS} for r in csv.DictReader(source)]
     for row in rows:
         for key in ('buys', 'closed_positions', 'open_positions_count', 'conservative_pnl_usdc',
-                    'conservative_return', 'identity_cluster_size', 'snapshot_at'):
+                    'conservative_return', 'identity_cluster_size', 'snapshot_at',
+                    'working_transactions_decoded', 'working_transactions_queued'):
             row[key] = number(row[key])
         row['paper_review_eligible'] = row['paper_review_eligible'] == 'True'
+        row['using_retained_snapshot'] = row['using_retained_snapshot'] == 'True'
     return {'exported_at': path.stat().st_mtime, 'wallets': rows}
 
 

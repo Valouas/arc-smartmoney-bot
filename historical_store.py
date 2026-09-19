@@ -22,3 +22,5 @@ VERSION = 1
 def initialize(db):
     db.executescript(SCHEMA)
     db.commit()
+    from historical_snapshots import initialize_snapshots
+    initialize_snapshots(db)

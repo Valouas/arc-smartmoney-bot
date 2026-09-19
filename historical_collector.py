@@ -11,10 +11,15 @@ from discovery_parser import txhash
 from historical_metrics import analyze
 from historical_store import VERSION, initialize
 from historical_prefetch import ordered_reads, read_transaction
+from historical_snapshots import preserve_completed, decoding_context, add_hashes, invalidate
 from identity_graph import IdentityGraph
 from rpc import ArcRPC, USDC_ERC20, NATIVE_MIRROR
 from rpc_transport import RPCError
 from wallet_policy import is_dex_infrastructure
+
+
+class RefreshCoverageError(ArcscanError):
+    pass
 
 
 def parse_page(data, cutoff, seen):
@@ -50,18 +55,42 @@ class HistoricalCollector:
         self.rpc_factory = rpc_factory or (lambda: ArcRPC(cfg.rpc_url, cfg.chain_id))
         initialize(self.db)
 
+    def validate_refresh_coverage(self, wallet):
+        saved = self.db.execute('SELECT invalidated FROM historical_snapshots WHERE wallet=?', (wallet,)).fetchone()
+        if not saved or saved[0]: return
+        missing = self.db.execute('''SELECT s.payload FROM historical_snapshot_transactions s
+            LEFT JOIN historical_transactions t ON t.wallet=s.wallet AND t.tx_hash=s.tx_hash
+            WHERE s.wallet=? AND t.tx_hash IS NULL''', (wallet,))
+        if any(not json.loads(row[0]).get('outside_snapshot') for row in missing):
+            raise RefreshCoverageError('historical refresh omitted known transaction')
+
     def start(self, wallet, now):
+        with self.db:
+            preserve_completed(self.db, wallet)
         data = self.arc.address_activity(wallet, limit=self.cfg.discovery_page_size, cursor=None)
         hashes, nxt = parse_page(data, 0, [])
         cutoff = min(max(0, self.rpc.block_number()-2), data['page']['coverage']['to_block'])
         block = self.rpc.get_block(cutoff, False)
+        context = decoding_context(self.cfg)
+        saved = self.db.execute('SELECT * FROM historical_snapshots WHERE wallet=?', (wallet,)).fetchone()
+        reuse = False
+        if saved and not saved['invalidated']:
+            previous = json.loads(saved['run'])
+            if cutoff < previous['cutoff_block']:
+                raise ArcscanError('historical cutoff regressed')
+            anchor = self.rpc.get_block(previous['cutoff_block'], False)
+            if hex_value(anchor['hash']) != previous['cutoff_hash']:
+                with self.db: invalidate(self.db, wallet)
+                raise ArcscanError('historical retained snapshot reorganization')
+            reuse = saved['context'] == context
         with self.db:
             self.db.execute('DELETE FROM historical_transactions WHERE wallet=?', (wallet,))
             self.db.execute('INSERT OR REPLACE INTO historical_runs(wallet,version,started_at,cutoff_block,cutoff_at,cutoff_hash,phase,cursor,seen,last_attempt) VALUES(?,?,?,?,?,?,?,?,?,?)',
                 (wallet, VERSION, now, cutoff, int(block['timestamp']), hex_value(block['hash']),
                  'FETCHING' if nxt else 'DECODING', nxt, json.dumps([nxt] if nxt else []), now))
-            self.db.executemany('INSERT OR IGNORE INTO historical_transactions(wallet,tx_hash) VALUES(?,?)',
-                                [(wallet, h) for h in hashes])
+            self.db.execute('INSERT OR REPLACE INTO historical_refresh_context VALUES(?,?,?)', (wallet,context,int(reuse)))
+            add_hashes(self.db, wallet, hashes, reuse)
+            if not nxt: self.validate_refresh_coverage(wallet)
 
     def transaction(self, wallet, h, run, reads=None, rpc=None):
         rpc = self.rpc if rpc is None else rpc
@@ -154,6 +183,11 @@ class HistoricalCollector:
             self.start(wallet, now)
             return
         if run['phase'] == 'COMPLETE': return
+        context = self.db.execute('SELECT context,reuse FROM historical_refresh_context WHERE wallet=?', (wallet,)).fetchone()
+        if context and context['context'] != decoding_context(self.cfg):
+            # A changed decoder/registry must never mix old and new evidence.
+            with self.db: invalidate(self.db, wallet)
+            raise ArcscanError('historical decoding context changed')
         # Fairness is persisted even on a transport failure. A difficult wallet
         # cannot occupy the first N positions forever.
         with self.db:
@@ -164,8 +198,8 @@ class HistoricalCollector:
                 seen = json.loads(run['seen'])
                 hashes, nxt = parse_page(data, run['cutoff_block'], seen)
                 with self.db:
-                    self.db.executemany('INSERT OR IGNORE INTO historical_transactions(wallet,tx_hash) VALUES(?,?)',
-                                        [(wallet, h) for h in hashes])
+                    add_hashes(self.db, wallet, hashes, bool(context and context['reuse']))
+                    if not nxt: self.validate_refresh_coverage(wallet)
                     self.db.execute('UPDATE historical_runs SET cursor=?,seen=?,phase=? WHERE wallet=?',
                         (nxt, json.dumps(seen+[nxt] if nxt else seen), 'FETCHING' if nxt else 'DECODING', wallet))
             else:
@@ -177,15 +211,27 @@ class HistoricalCollector:
                     block = self.rpc.get_block(run['cutoff_block'], False)
                     if hex_value(block['hash']) != run['cutoff_hash']:
                         with self.db:
-                            self.db.execute('UPDATE historical_runs SET version=0 WHERE wallet=?', (wallet,))
+                            invalidate(self.db, wallet)
                         raise ArcscanError('historical snapshot reorganization')
+                    saved = self.db.execute('SELECT run FROM historical_snapshots WHERE wallet=? AND invalidated=0', (wallet,)).fetchone()
+                    if saved:
+                        previous = json.loads(saved[0])
+                        if hex_value(self.rpc.get_block(previous['cutoff_block'], False)['hash']) != previous['cutoff_hash']:
+                            with self.db: invalidate(self.db, wallet)
+                            raise ArcscanError('historical retained snapshot reorganization')
                     rows = [json.loads(r[0]) for r in self.db.execute('SELECT payload FROM historical_transactions WHERE wallet=?', (wallet,))]
                     identity = self.identity(wallet, analyze(rows, self.cfg))
+                    if context and context['context'] != decoding_context(self.cfg):
+                        with self.db: invalidate(self.db, wallet)
+                        raise ArcscanError('historical decoding context changed')
                     with self.db:
                         self.db.execute('UPDATE historical_runs SET phase=?,completed_at=?,identity=? WHERE wallet=?',
                                         ('COMPLETE', now, json.dumps(identity), wallet))
-        except (RPCError, ArcscanError):
+                        preserve_completed(self.db, wallet)
+        except (RPCError, ArcscanError) as error:
             with self.db:
+                if isinstance(error, RefreshCoverageError):
+                    self.db.execute('UPDATE historical_runs SET version=0 WHERE wallet=?', (wallet,))
                 self.db.execute('UPDATE historical_runs SET error=? WHERE wallet=?', ('transport_or_coverage_incomplete', wallet))
             raise
 

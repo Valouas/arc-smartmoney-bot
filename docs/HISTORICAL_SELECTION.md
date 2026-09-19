@@ -276,7 +276,51 @@ Mesure locale du 19 septembre 2026, sur les memes 24 transactions et sans ecritu
 en base : 12,688 s avec 1 lecteur, 5,875 s avec 4, 5,688 s avec 8. Les payloads et
 metriques sont identiques. Ce petit echantillon n'est pas une garantie de debit
 global : latence Arcscan, taille des historiques et activite concurrente restent
-variables. Le renouvellement des snapshots existant n'est pas modifie ici.
+variables.
+
+### Conservation des analyses et actualisation incrementale
+
+La derniere generation terminee est conservee dans `historical_snapshots` et
+`historical_snapshot_transactions`, separement du travail courant. La migration
+archive les generations deja terminees sans toucher aux transactions en cours.
+Une nouvelle analyse remplace l'ancienne seulement apres pagination complete,
+decodage complet, controles des blocs et evaluation de l'identite, dans la meme
+transaction SQLite. Une erreur laisse l'ancienne analyse consultable avec sa date.
+Un snapshot termine peut toujours contenir des reserves de qualite : elles restent
+visibles et ne deviennent jamais implicitement des donnees completes.
+
+Les lectures RPC deja decodees sont reutilisees pour les hashes effectivement
+retrouves dans une nouvelle pagination Arcscan. Le bloc de reference doit rester
+canonique et l'empreinte du decodeur/registre DEX doit correspondre. Les anciennes
+generations sans empreinte sont conservees, mais exigent une premiere reconstruction
+avant de devenir reutilisables. Les payloads ambigus, hors snapshot ou incomplets
+sont relus. Aucun curseur Arcscan n'est saute et une transaction connue manquante
+invalide la nouvelle couverture. Une reorganisation invalide l'autorite de la
+generation concernee. L'historique du scanner et le paper ne sont pas reecrits.
+
+Le reporting distingue `using_retained_snapshot`, `refresh_phase` et les compteurs
+de travail courant. Les metriques conservees gardent leur cutoff et leur date de
+fin. Pour un resultat conserve pendant le renouvellement, l'expiration est bornee
+par la date de fin precedente + la duree de renouvellement et par l'age maximal
+existant ; des exports repetes ne la prolongent pas. Un resultat expire reste
+visible mais ne donne pas d'admission paper. Les seuils de performance sont inchanges.
+
+Le dashboard compte l'union des transactions conservees et courantes par
+`(wallet, tx_hash)`, sans doubler les transactions reutilisees, et affiche aussi
+la progression de l'actualisation. Les analyses terminees passent avant les
+resultats provisoires dans le classement historique.
+
+### Recuperation depuis une sauvegarde
+
+`recover_historical.py --backup CHEMIN` produit un inventaire sans ecriture.
+Ajouter `--apply` apres arret du lanceur pour effectuer une sauvegarde de securite
+et importer les preuves. La base de travail, le scanner et le paper sont conserves.
+Les generations terminees recuperees doivent passer une verification de leur bloc
+sur le RPC Arc configure et ne remplacent jamais une generation plus recente.
+Les preuves partielles vont uniquement dans les tables `historical_recovery_*` :
+elles ne sont pas des analyses terminees et ne donnent aucune autorite. Rejouer
+l'import de la meme sauvegarde ne cree pas de doublons. Les donnees supprimees
+avant cette sauvegarde ne peuvent pas etre inventees ou recuperees par ce script.
 
 ### Rapports ouverts sous Windows
 
