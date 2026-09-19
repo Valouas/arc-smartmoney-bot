@@ -3,6 +3,7 @@ import http.client
 import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,42 @@ def test_historical_export_is_separate_timestamped_and_whitelisted(tmp_path):
     assert result['wallets'][0]['buys'] is None
     assert result['wallets'][0]['paper_review_eligible'] is True
     assert 'DO_NOT_EXPOSE' not in json.dumps(result)
+
+
+def test_large_historical_detail_field_does_not_break_overview(tmp_path):
+    (tmp_path/'data').mkdir()
+    path = tmp_path/'data/historical_wallet_ranking.csv'
+    with path.open('w', newline='', encoding='utf-8') as target:
+        writer = csv.DictWriter(target, fieldnames=['wallet', 'conservative_pnl_usdc', 'buy_details'])
+        writer.writeheader()
+        writer.writerow({'wallet':'0xabc', 'conservative_pnl_usdc':'42',
+                         'buy_details':'DO_NOT_EXPOSE' * 20000})
+    body = dashboard.SnapshotCache(tmp_path).get()
+    result = json.loads(body)
+    assert result['history']['wallets'][0]['conservative_pnl_usdc'] == 42
+    assert 'history' not in result['errors']
+    assert b'DO_NOT_EXPOSE' not in body
+
+
+def test_oversized_csv_only_disables_history_and_http_stays_available(tmp_path):
+    (tmp_path/'data').mkdir()
+    (tmp_path/'data/historical_wallet_ranking.csv').write_text('wallet,detail\nabc,'+'x'*(8*1024*1024+1))
+    (tmp_path/'data/run_all_state.json').write_text(json.dumps({
+        'updated_at':time.time(), 'status':'RUNNING', 'processes':{'bot':{'exit_code':None}}}))
+    instance = dashboard.make_server(tmp_path, port=0)
+    thread = threading.Thread(target=instance.serve_forever, daemon=True)
+    thread.start()
+    conn = http.client.HTTPConnection('127.0.0.1', instance.server_port, timeout=5)
+    try:
+        conn.request('GET', '/api/overview')
+        response = conn.getresponse()
+        assert response.status == 200
+        result = json.loads(response.read())
+        assert result['errors']['history'] == 'UNAVAILABLE'
+        assert result['history'] is None
+        assert result['processes']['fresh'] is True
+    finally:
+        conn.close(); instance.shutdown(); instance.server_close(); thread.join(timeout=2)
 
 
 def test_analysis_counts_union_wallets_and_invalidated_snapshots(tmp_path):

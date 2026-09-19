@@ -133,6 +133,9 @@ def analysis_snapshot(path):
 
 def history_snapshot(path):
     # Reuse the published ranking; never reconstruct every wallet on each refresh.
+    # Detailed positions/trades occupy large CSV cells even though the dashboard
+    # only exposes summary columns. Bound the parser without Python's 128 KiB cap.
+    csv.field_size_limit(8 * 1024 * 1024)
     with path.open(encoding='utf-8-sig', newline='') as source:
         rows = [{k: r.get(k) or None for k in HISTORY_FIELDS} for r in csv.DictReader(source)]
     for row in rows:
@@ -166,7 +169,7 @@ def snapshot(root=ROOT, now=None):
         except FileNotFoundError:
             data[name] = None
             data['errors'][name] = 'NOT_INITIALIZED'
-        except (OSError, sqlite3.Error, ValueError, TypeError, KeyError, ArithmeticError):
+        except (OSError, sqlite3.Error, csv.Error, ValueError, TypeError, KeyError, ArithmeticError):
             data[name] = None
             data['errors'][name] = 'UNAVAILABLE'
     return data
