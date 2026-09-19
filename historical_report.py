@@ -2,6 +2,7 @@
 import json
 import sqlite3
 import time
+import traceback
 from collections import Counter
 from contextlib import closing
 from pathlib import Path
@@ -12,6 +13,23 @@ from historical_store import VERSION
 from wallet_policy import infrastructure_addresses
 from wallet_ranking import export_csv
 from paper_admission import assess, POLICY, ZERO_ADDRESS
+
+
+class ReportExportError(RuntimeError):
+    """Filesystem failure confined to a derived export; no raw exception text."""
+    def __init__(self, path, error):
+        frame = traceback.extract_tb(error.__traceback__)[-1]
+        self.safe_details = (f'artifact={Path(path).name} category={type(error).__name__} '
+                             f'errno={error.errno} winerror={getattr(error, "winerror", None)} '
+                             f'site={Path(frame.filename).name}:{frame.lineno}')
+        super().__init__(self.safe_details)
+
+
+def export_artifact(path, write):
+    try:
+        write()
+    except OSError as error:
+        raise ReportExportError(path, error) from None
 
 
 def build_report(path, cfg, now=None):
@@ -117,7 +135,8 @@ def build_report(path, cfg, now=None):
 def publish(rows, cfg, output_dir='data', top=20, diverse=False, now=None):
     now = int(time.time()) if now is None else now
     path = Path(output_dir)
-    export_csv(rows, path/'historical_wallet_ranking.csv')
+    export_artifact(path/'historical_wallet_ranking.csv',
+                    lambda: export_csv(rows, path/'historical_wallet_ranking.csv'))
     summary = {'total': len(rows), **dict(Counter(r['historical_class'] for r in rows)),
                'analysis_states': dict(Counter(r['analysis_status'] for r in rows)),
                'performance_stages': dict(Counter(r['performance_stage'] for r in rows)),
@@ -139,16 +158,19 @@ def publish(rows, cfg, output_dir='data', top=20, diverse=False, now=None):
                 'purpose': 'historical_selection_for_paper', 'live_signal_authority': False,
                 'requires_consumer_validation': True, 'one_wallet_per_identity_cluster': True,
                 'wallets': selected}
-    write_json(path/'historical_selection.json', contract)
+    export_artifact(path/'historical_selection.json',
+                    lambda: write_json(path/'historical_selection.json', contract))
     # Separate contract: broad paper admission is never a strict qualification
     # and cannot silently weaken existing consumers of historical_selection.
     review={'schema_version':2,'admission_policy':POLICY,'chain_id':cfg.chain_id,'generated_at':now,
             'purpose':'paper_review_selection','live_signal_authority':False,
             'requires_consumer_validation':True,'one_wallet_per_identity_cluster':False,
             'wallets':[r for r in rows if r['paper_review_eligible'] and r['expires_at']>now]}
-    write_json(path/'paper_review_selection.json',review)
+    export_artifact(path/'paper_review_selection.json',
+                    lambda: write_json(path/'paper_review_selection.json',review))
     summary['paper_review_wallets']=len(review['wallets'])
-    write_json(path/'historical_wallet_ranking.json', {'generated_at': now, 'summary': summary, 'wallets': rows})
+    export_artifact(path/'historical_wallet_ranking.json',
+                    lambda: write_json(path/'historical_wallet_ranking.json', {'generated_at': now, 'summary': summary, 'wallets': rows}))
     print('HISTORIQUE | FIFO, gas observe, positions ouvertes non valorisees | aucune autorite live')
     print('N/D = donnees indisponibles. PARTIAL = reconstruction en cours, performance non evaluee.')
     print('WATCH = observation conservee; PREMIER RESULTAT POSITIF ne prouve pas une rentabilite repetee.')

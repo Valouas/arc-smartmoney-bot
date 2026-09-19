@@ -164,15 +164,18 @@ def shutdown(children,grace=25):
 def prepare(cfg):
     """Regenerate exports only; never run a second historical collection worker."""
     if not Path('data/arc_bot.sqlite3').exists(): return
-    from historical_report import build_report,publish
+    from historical_report import build_report,publish,ReportExportError
     from paper_copy.selection import load_selection
     from paper_admission import DEFAULT_SELECTION
     from paper_copy.webhook import watch_addresses
     from watchlist_manager import WatchlistManager,effective_watchlist
     import sqlite3
     rows=build_report('data/arc_bot.sqlite3',cfg)
-    with (LOGS/'preparation.log').open('a',encoding='utf-8') as log,contextlib.redirect_stdout(log):
-        publish(rows,cfg,top=4)
+    try:
+        with (LOGS/'preparation.log').open('a',encoding='utf-8') as log,contextlib.redirect_stdout(log):
+            publish(rows,cfg,top=4)
+    except ReportExportError as error:
+        print('Export historique differe ; collecte maintenue | '+error.safe_details,flush=True)
     selected=load_selection(DEFAULT_SELECTION,cfg,int(time.time()))
     print('Wallets admis en paper : '+str(len(selected)),flush=True)
     path=Path('data/arc_bot.sqlite3').resolve()

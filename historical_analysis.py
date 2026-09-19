@@ -6,7 +6,7 @@ import time
 from arcscan import ArcscanClient
 from config import SETTINGS
 from historical_collector import HistoricalCollector
-from historical_report import build_report, publish
+from historical_report import build_report, publish, ReportExportError
 from process_lock import ProcessLock
 from rpc import ArcRPC
 from storage import Storage
@@ -40,12 +40,18 @@ def main(argv=None):
                 started = time.monotonic()
                 result = collector.cycle()
                 collected = time.monotonic()
-                report()
+                published = True
+                try:
+                    report()
+                except ReportExportError as error:
+                    published = False
+                    logging.warning('Historical export deferred; collection continues | %s', error.safe_details)
                 print({**result, 'collection_seconds': round(collected-started, 3),
                        'report_seconds': round(time.monotonic()-collected, 3),
                        'rpc_workers': SETTINGS.historical_rpc_workers,
+                       'report_published': published,
                        'pause_seconds': 0 if args.once else SETTINGS.historical_poll_seconds}, flush=True)
-                if args.once: return 0
+                if args.once: return 0 if published else 1
                 time.sleep(SETTINGS.historical_poll_seconds)
         except KeyboardInterrupt:
             return 0
@@ -58,5 +64,11 @@ if __name__ == '__main__':
         raise SystemExit(main())
     except Exception as error:
         # No raw exception body: transport/provider errors may contain credentials.
-        print('Historical analysis failed | category='+type(error).__name__)
+        import traceback
+        from pathlib import Path
+        frame = traceback.extract_tb(error.__traceback__)[-1]
+        print('Historical analysis failed | category='+type(error).__name__+
+              ' site='+Path(frame.filename).name+':'+str(frame.lineno)+
+              ' errno='+str(getattr(error, 'errno', None))+
+              ' winerror='+str(getattr(error, 'winerror', None)), flush=True)
         raise SystemExit(1) from None

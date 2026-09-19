@@ -278,6 +278,22 @@ metriques sont identiques. Ce petit echantillon n'est pas une garantie de debit
 global : latence Arcscan, taille des historiques et activite concurrente restent
 variables. Le renouvellement des snapshots existant n'est pas modifie ici.
 
+### Rapports ouverts sous Windows
+
+Les CSV et JSON sont ecrits dans un fichier temporaire puis remplaces atomiquement.
+Un verrou de lecteur Windows provoque au maximum trois tentatives, espacees de
+50 puis 100 ms. Si un export reste inaccessible, son ancien contenu est conserve
+et le worker historique poursuit la collecte ; il retente la publication au cycle
+suivant. Le demarrage global tolere egalement cette erreur d'export precise.
+Chaque fichier est atomique individuellement, sans transaction entre les exports.
+
+Les dates et expirations des selections conservees ne sont pas prolongees : les
+consommateurs paper continuent de valider leur contrat habituel. `--once` retourne
+un code non nul si le rapport n'a pas pu etre publie. Les erreurs SQLite et de
+reconstruction ne sont pas masquees par cette tolerance. Le journal indique
+`report_published`, le nom de l'export, la categorie, les codes errno/winerror et
+l'emplacement du code, sans message brut pouvant contenir des secrets.
+
 ```powershell
 .\.venv\Scripts\python.exe historical_analysis.py --once
 .\.venv\Scripts\python.exe wallet_ranking.py --historical

@@ -240,7 +240,8 @@ def export_csv(rows, csv_path):
         raise ValueError("Report output must be a CSV file")
     path.parent.mkdir(parents=True, exist_ok=True)
     fields = list(rows[0]) if rows else ["wallet", "report_class"]
-    with path.open("w", encoding="utf-8-sig", newline="") as stream:
+    from atomic_json import atomic_text
+    with atomic_text(path, encoding="utf-8-sig", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         writer.writerows({k: json.dumps(v, ensure_ascii=True, allow_nan=False) if isinstance(v, (list, dict)) else v
