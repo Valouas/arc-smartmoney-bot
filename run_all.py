@@ -23,7 +23,7 @@ LOCK=Path('data/run_all.lock')
 STATE=Path('data/run_all_state.json')
 STOP=Path('data/run_all.stop')
 LOGS=Path('data/launcher_logs')
-ROLES=('launch_indexer','wallet_profiler','auto_discovery','bot','historical_analysis','alchemy_webhook','paper_copy','dashboard')
+ROLES=('launch_indexer','wallet_profiler','auto_discovery','bot','historical_analysis','alchemy_webhook','paper_copy','dashboard','automatic_backup')
 
 
 def record_event(event, **details):
@@ -78,7 +78,9 @@ def roles_for(cfg):
     roles=list(ROLES[:4])
     if cfg.historical_analysis_enabled: roles.append('historical_analysis')
     if cfg.alchemy_webhook_enabled: roles.append('alchemy_webhook')
-    return roles+['paper_copy','dashboard']
+    roles += ['paper_copy','dashboard']
+    if getattr(cfg,'automatic_backup_enabled',False): roles.append('automatic_backup')
+    return roles
 
 
 def busy(path):
@@ -195,6 +197,12 @@ def supervise(cfg):
     preflight(cfg)
     LOGS.mkdir(parents=True,exist_ok=True)
     STOP.unlink(missing_ok=True)
+    if getattr(cfg,'automatic_backup_enabled',False):
+        from automatic_backup import create_backup
+        print('Sauvegarde de securite avant demarrage...',flush=True)
+        generation=create_backup(cfg)
+        record_event('startup_backup_verified' if generation else 'startup_backup_no_existing_database')
+        if generation: print('Sauvegarde SQLite verifiee avant demarrage.',flush=True)
     prepare(cfg)
     children={}; url=None; warned=set(); publisher=StatePublisher()
     reason='startup_failure'; operation='launch_child'

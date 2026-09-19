@@ -221,6 +221,25 @@ def test_keyboard_interrupt_is_journaled_separately(local,cfg,monkeypatch):
     assert events()[-1]['reason']=='keyboard_interrupt'
 
 
+def test_failed_backup_worker_stops_managed_workers(local,cfg,monkeypatch):
+    cfg.automatic_backup_enabled=True
+    monkeypatch.setattr(run_all,'preflight',lambda _:None)
+    monkeypatch.setattr(run_all,'prepare',lambda _:None)
+    monkeypatch.setattr('automatic_backup.create_backup',lambda _:None)
+    monkeypatch.setattr(run_all,'tunnel',lambda _: 'https://example.ngrok.app/webhook/alchemy')
+    def launch(command,path):
+        p=Mock(pid=123)
+        p.poll.return_value=1 if command[-1]=='automatic_backup' else None
+        return p
+    monkeypatch.setattr(run_all,'launch',launch)
+    stop=Mock();monkeypatch.setattr(run_all,'shutdown',stop)
+    with pytest.raises(RuntimeError,match='automatic_backup est arrete'):
+        run_all.supervise(cfg)
+    stop.assert_called_once()
+    assert 'bot' in stop.call_args.args[0]
+    assert events()[-1]['reason']=='core_worker_exit'
+
+
 def test_failed_journal_is_never_fatal(local,monkeypatch,capsys):
     monkeypatch.setattr(run_all.Path,'open',Mock(side_effect=PermissionError('sensitive')))
     run_all.record_event('supervisor_start')

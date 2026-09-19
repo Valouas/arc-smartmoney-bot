@@ -113,6 +113,7 @@ class SharedComputeLimiter(SharedRateLimiter):
         self.compute_units_per_second = compute_units_per_second
         with closing(self._connect()) as db:
             db.execute('CREATE TABLE IF NOT EXISTS cu_usage (at REAL NOT NULL, cost INTEGER NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS rpc_usage_totals (method TEXT PRIMARY KEY, requests INTEGER NOT NULL, throughput_cu INTEGER NOT NULL)')
             db.commit()
 
     def acquire(self, method):
@@ -131,6 +132,8 @@ class SharedComputeLimiter(SharedRateLimiter):
                 if wait <= 0:
                     db.execute('INSERT OR REPLACE INTO budget VALUES(1,?)', (now + self.interval,))
                     db.execute('INSERT INTO cu_usage VALUES(?,?)', (now, cost))
+                    db.execute('''INSERT INTO rpc_usage_totals VALUES(?,1,?)
+                        ON CONFLICT(method) DO UPDATE SET requests=requests+1,throughput_cu=throughput_cu+excluded.throughput_cu''', (method,cost))
                     db.commit()
                     return
                 db.commit()  # Keep pruning bounded even while the caller waits.

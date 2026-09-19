@@ -1,7 +1,15 @@
 import sqlite3
+import json
 from pathlib import Path
 
 p = Path("data/arc_bot.sqlite3")
+backup_status = Path('data/backup_status.json')
+if backup_status.exists():
+    try:
+        state=json.loads(backup_status.read_text(encoding='utf-8'))
+        print('Automatic backup:',state.get('status'),'| last success:',state.get('last_success'))
+    except (OSError,ValueError):
+        print('Automatic backup: status unavailable')
 if not p.exists():
     print("No database yet. Start bot.py first.")
     raise SystemExit

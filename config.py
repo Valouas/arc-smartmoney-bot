@@ -20,6 +20,14 @@ class Settings:
     rpc_compute_units_per_second: float = _f("ARC_RPC_COMPUTE_UNITS_PER_SECOND", 0)
     rpc_fallback_requests_per_second: float = _f("ARC_RPC_FALLBACK_REQUESTS_PER_SECOND", 2)
     rpc_rate_limit_file: str = os.getenv("ARC_RPC_RATE_LIMIT_FILE", "data/rpc_rate_limit.sqlite3")
+    automatic_backup_enabled: bool = os.getenv('AUTOMATIC_BACKUP_ENABLED', 'true').lower() == 'true'
+    automatic_backup_directory: str = os.getenv('AUTOMATIC_BACKUP_DIRECTORY', 'data/automatic_backups')
+    automatic_backup_interval_seconds: int = _i('AUTOMATIC_BACKUP_INTERVAL_SECONDS', 3600)
+    automatic_backup_keep_last: int = _i('AUTOMATIC_BACKUP_KEEP_LAST', 24)
+    automatic_backup_keep_daily: int = _i('AUTOMATIC_BACKUP_KEEP_DAILY', 7)
+    automatic_backup_max_age_seconds: int = _i('AUTOMATIC_BACKUP_MAX_AGE_SECONDS', 10800)
+    automatic_backup_timeout_seconds: int = _i('AUTOMATIC_BACKUP_TIMEOUT_SECONDS', 300)
+    automatic_backup_reserve_mb: int = _i('AUTOMATIC_BACKUP_RESERVE_MB', 2048)
     chain_id: int = _i("ARC_CHAIN_ID", 5042)
     arcscan_api_url: str = os.getenv(
         "ARCSCAN_API_URL", "https://api.arc-scan.org/v1"
@@ -104,6 +112,11 @@ class Settings:
     alchemy_webhook_signing_key: str = field(default=os.getenv('ALCHEMY_WEBHOOK_SIGNING_KEY', ''),repr=False)
 
     def __post_init__(self):
+        if (self.automatic_backup_interval_seconds < 60 or self.automatic_backup_keep_last < 2
+                or self.automatic_backup_keep_daily < 1 or self.automatic_backup_timeout_seconds < 1
+                or self.automatic_backup_reserve_mb < 0
+                or self.automatic_backup_max_age_seconds < self.automatic_backup_interval_seconds):
+            raise ValueError('Invalid automatic backup settings')
         if not 1 <= self.historical_rpc_workers <= 16:
             raise ValueError('HISTORICAL_RPC_WORKERS must be between 1 and 16')
         if not math.isfinite(self.historical_poll_seconds) or self.historical_poll_seconds < 1:

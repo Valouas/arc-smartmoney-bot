@@ -1,6 +1,7 @@
 """Deterministic throughput checks: no network, no real sleeps."""
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
+import sqlite3
 
 import pytest
 
@@ -46,6 +47,22 @@ def test_sixth_get_logs_waits_for_capacity_across_instances(tmp_path):
     assert clock.now < 101
     limiter(tmp_path, clock).acquire('eth_getLogs')
     assert clock.now >= 101
+
+
+def test_usage_totals_survive_restart_and_count_only_admitted_requests(tmp_path):
+    clock = VirtualClock()
+    first = limiter(tmp_path, clock)
+    first.acquire('eth_getLogs')
+    def totals():
+        with sqlite3.connect(first.path) as db:
+            return dict((m,(n,c)) for m,n,c in db.execute('SELECT * FROM rpc_usage_totals'))
+    def sleep(seconds):
+        assert totals() == {'eth_getLogs': (1,60)}
+        clock.sleep(seconds)
+    first.sleep = sleep
+    first.acquire('eth_getLogs')
+    limiter(tmp_path, clock).acquire('eth_chainId')
+    assert totals() == {'eth_getLogs': (2,120), 'eth_chainId': (1,5)}
 
 
 def _child_weighted(path):
