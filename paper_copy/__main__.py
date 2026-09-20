@@ -31,6 +31,9 @@ def main(argv=None):
     parser.add_argument('--no-webhook',action='store_true',help='Use the original RPC polling only')
     args = parser.parse_args(argv)
     if args.status: report(args.db); return 0
+    if SETTINGS.paper_copy_paused:
+        print('PAPER COPY EN PAUSE | aucune simulation ni lecture RPC ; historique conserve',flush=True)
+        return 0
     policy = Policy(**json.loads(Path(args.policy).read_text(encoding='utf-8-sig'))) if args.policy else Policy()
     logging.basicConfig(level=logging.WARNING,format='%(message)s')
     with ProcessLock(args.db+'.lock'):

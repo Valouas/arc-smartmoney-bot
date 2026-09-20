@@ -40,6 +40,35 @@ def test_explicit_research_mode_keeps_discovery_history_and_live_paper(cfg):
     assert not {'bot.py','wallet_profiler.py'} & {c[-1] for c in commands_for(cfg)}
 
 
+def test_paper_pause_keeps_research_and_observation_services(cfg):
+    cfg.research_paper_only=True
+    cfg.external_discovery_enabled=True
+    cfg.alchemy_sync_enabled=True
+    before=run_all.roles_for(cfg)
+    cfg.paper_copy_paused=True
+    assert run_all.roles_for(cfg)==[r for r in before if r!='paper_copy']
+    assert {'historical_analysis','external_wallet_pipeline','dashboard'} <= set(run_all.roles_for(cfg))
+
+
+def test_manual_paper_start_respects_pause_before_database_or_rpc(tmp_path,monkeypatch):
+    import paper_copy.__main__ as cli
+    monkeypatch.setattr(cli,'SETTINGS',SimpleNamespace(paper_copy_paused=True))
+    store=Mock();rpc=Mock()
+    monkeypatch.setattr(cli,'Store',store);monkeypatch.setattr(cli,'ArcRPC',rpc)
+    path=tmp_path/'paper.sqlite3'
+    assert cli.main(['--once','--db',str(path)])==0
+    assert not path.exists()
+    store.assert_not_called();rpc.assert_not_called()
+
+
+def test_paper_status_remains_available_during_pause(monkeypatch):
+    import paper_copy.__main__ as cli
+    monkeypatch.setattr(cli,'SETTINGS',SimpleNamespace(paper_copy_paused=True))
+    report=Mock();monkeypatch.setattr(cli,'report',report)
+    assert cli.main(['--status'])==0
+    report.assert_called_once_with('data/paper_copy.sqlite3')
+
+
 def test_existing_manual_worker_prevents_any_new_start(local,cfg,monkeypatch):
     monkeypatch.setattr(run_all,'busy',lambda _:True)
     with pytest.raises(RuntimeError,match='ancienne instance'): run_all.preflight(cfg)

@@ -82,7 +82,8 @@ def roles_for(cfg):
     if getattr(cfg,'external_discovery_enabled',False): roles.append('external_wallet_pipeline')
     if cfg.alchemy_webhook_enabled: roles.append('alchemy_webhook')
     if cfg.alchemy_webhook_enabled and getattr(cfg,'alchemy_sync_enabled',False): roles.append('alchemy_sync')
-    roles += ['paper_copy','dashboard']
+    if not getattr(cfg,'paper_copy_paused',False): roles.append('paper_copy')
+    roles.append('dashboard')
     if getattr(cfg,'automatic_backup_enabled',False): roles.append('automatic_backup')
     return roles
 
@@ -270,6 +271,8 @@ def supervise(cfg):
         record_event('startup_backup_verified' if generation else 'startup_backup_no_existing_database')
         if generation: print('Sauvegarde SQLite verifiee avant demarrage.',flush=True)
     prepare(cfg)
+    if getattr(cfg,'paper_copy_paused',False):
+        print('PAPER COPY EN PAUSE : aucune simulation ; comptes et checkpoints conserves.',flush=True)
     if getattr(cfg,'research_paper_only',False):
         print('Mode RECHERCHE + PAPER : scanner V4 et profiler forward suspendus ; checkpoints conserves.',flush=True)
     children={}; url=None; warned=set(); publisher=StatePublisher(); recovery=HistoricalRecovery()

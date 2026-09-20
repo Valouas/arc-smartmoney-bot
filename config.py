@@ -135,6 +135,7 @@ class Settings:
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
     paper_live_enabled: bool = os.getenv('PAPER_LIVE_ENABLED', 'false').lower() == 'true'
+    paper_copy_paused: bool = os.getenv('PAPER_COPY_PAUSED', 'false').lower() == 'true'
     research_paper_only: bool = os.getenv('RESEARCH_PAPER_ONLY', 'false').lower() == 'true'
     paper_log_query_blocks: int = _i('PAPER_LOG_QUERY_BLOCKS', 10)
     paper_catchup_window_blocks: int = _i('PAPER_CATCHUP_WINDOW_BLOCKS', 40)
