@@ -6,6 +6,7 @@ import time
 from arcscan import ArcscanClient
 from config import SETTINGS
 from historical_collector import HistoricalCollector
+from historical_priority import PriorityCollector
 from historical_report import build_report, publish, ReportExportError
 from process_lock import ProcessLock
 from rpc import ArcRPC
@@ -36,6 +37,8 @@ def main(argv=None):
         try:
             rpc.sanity_check()
             collector = HistoricalCollector(db, rpc, arc, SETTINGS)
+            if SETTINGS.historical_priority_enabled:
+                collector = PriorityCollector(collector)
             while True:
                 started = time.monotonic()
                 result = collector.cycle()

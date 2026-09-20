@@ -85,8 +85,22 @@ def setup_worker(monkeypatch):
     monkeypatch.setattr(worker, 'ArcscanClient', Mock(return_value=arc))
     monkeypatch.setattr(worker, 'ProcessLock', lambda *args: nullcontext())
     monkeypatch.setattr(worker, 'HistoricalCollector', Mock(return_value=collector))
+    # These tests isolate export recovery, independently of the queue strategy.
+    monkeypatch.setattr(worker, 'PriorityCollector', Mock(return_value=collector))
     monkeypatch.setattr(worker, 'build_report', Mock(return_value=[]))
     return collector, db, rpc, arc
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_worker_selects_configured_queue_strategy(monkeypatch, enabled):
+    from dataclasses import replace
+    collector, *_ = setup_worker(monkeypatch)
+    collector.cycle.return_value = {}
+    monkeypatch.setattr(worker, 'SETTINGS', replace(Settings(), historical_priority_enabled=enabled))
+    monkeypatch.setattr(worker, 'publish', Mock())
+    assert worker.main(['--once']) == 0
+    assert worker.PriorityCollector.call_count == int(enabled)
+    collector.cycle.assert_called_once()
 
 
 @pytest.mark.parametrize('artifact', ['historical_wallet_ranking.csv', 'historical_selection.json',

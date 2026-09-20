@@ -73,6 +73,11 @@ class Settings:
     historical_rpc_workers: int = _i('HISTORICAL_RPC_WORKERS', 1)
     historical_poll_seconds: float = _f('HISTORICAL_POLL_SECONDS', 60)
     historical_refresh_seconds: int = _i('HISTORICAL_REFRESH_SECONDS', 21600)
+    historical_priority_enabled: bool = os.getenv('HISTORICAL_PRIORITY_ENABLED', 'true').lower() == 'true'
+    historical_focus_steps: int = _i('HISTORICAL_FOCUS_STEPS', 4)
+    historical_inactive_days: int = _i('HISTORICAL_INACTIVE_DAYS', 3)
+    historical_inactive_refresh_seconds: int = _i('HISTORICAL_INACTIVE_REFRESH_SECONDS', 86400)
+    historical_retry_seconds: int = _i('HISTORICAL_RETRY_SECONDS', 300)
     historical_max_age_hours: int = _i('HISTORICAL_MAX_AGE_HOURS', 48)
     historical_period_hours: int = _i('HISTORICAL_PERIOD_HOURS', 6)
     historical_min_profitable_periods: int = _i('HISTORICAL_MIN_PROFITABLE_PERIODS', 2)
@@ -121,6 +126,9 @@ class Settings:
     alchemy_sync_seconds: int = _i('ALCHEMY_SYNC_SECONDS',300)
 
     def __post_init__(self):
+        if (not 1 <= self.historical_focus_steps <= 16 or self.historical_inactive_days < 1
+                or self.historical_inactive_refresh_seconds < 1 or self.historical_retry_seconds < 1):
+            raise ValueError('Invalid historical scheduling settings')
         if self.alchemy_sync_seconds < 60:
             raise ValueError('ALCHEMY_SYNC_SECONDS must be at least 60')
         if not 1 <= self.scanner_log_window_blocks <= 10:

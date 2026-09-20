@@ -351,3 +351,57 @@ Les commandes de ranking lisent seulement la base et regenerent les exports sans
 reseau. `--once` realise un passage borne, pas une analyse instantanee de tous les
 wallets. Un verrou interdit deux workers historiques sur la meme base. Ne lancez
 pas `--once` en parallele du worker gere par `run_v4.py`.
+
+### Collecte priorisee par wallet
+
+`HISTORICAL_PRIORITY_ENABLED=true` (defaut) active un ordonnanceur separe du
+decodeur. Il ne modifie ni les seuils, ni les statuts, ni les regles paper.
+Sur quatre etapes, trois sont consacrees au travail prioritaire et une au wallet
+eligible servi le moins recemment. La rotation est en SQLite et survit aux
+redemarrages, meme avec une seule etape par cycle.
+
+Dans une ronde prioritaire, le nombre de tokens winners sources puis le rang
+d'achat precoce determinent l'ordre. Ce sont des indices de decouverte, pas une
+preuve de profit realise ni d'independance des identites. Le wallet choisi recoit
+jusqu'a `HISTORICAL_FOCUS_STEPS=4` etapes prioritaires pour terminer plus vite sa
+pagination et sa reconstruction. Puis la ronde passe aux autres wallets. Un
+wallet immense ou peu interessant reste observe ; il n'est pas exclu par cet
+ordonnancement. Les emitters DEX restent exclus comme auparavant.
+
+Le budget d'etapes existant (`DISCOVERY_MAX_WALLETS_PER_CYCLE`) et les limites RPC
+globales restent identiques. En mode prioritaire, ce budget peut servir plusieurs
+fois le meme wallet dans un cycle. Les trois etapes prioritaires ne garantissent
+pas 75 % des appels RPC : une page et un lot de decodage n'ont pas le meme cout.
+Les erreurs RPC/Arcscan conservent les curseurs et declenchent une attente locale
+de `HISTORICAL_RETRY_SECONDS=300` avant de reessayer ce wallet ; les autres avancent.
+
+Une analyse terminee dont toutes les transactions utilisables sont anciennes
+d'au moins `HISTORICAL_INACTIVE_DAYS=3` au cutoff peut etre actualisee toutes les
+`HISTORICAL_INACTIVE_REFRESH_SECONDS=86400` secondes au lieu de six heures.
+L'intervalle est plafonne a la moitie de l'horizon de fraicheur existant, sans
+etre plus court que l'intervalle habituel. Un historique vide ou des dates
+inconnues ne prouvent pas l'inactivite et ne declenchent pas ce report. Aucune
+date de preuve n'est rajeunie : les expirations habituelles restent applicables.
+Une nouvelle activite peut donc etre decouverte plus tard pour un wallet ainsi
+differe ; le suivi live des wallets paper continue independamment.
+
+Les payloads deja valides sont reutilises par le collecteur existant apres
+controle du contexte et des ancres canoniques. Seules les transactions nouvelles
+ou non reutilisables sont decodees de nouveau. La pagination Arcscan reste
+complete : sans preuve d'ordre et de couverture, rencontrer une transaction
+connue ne permet pas d'arreter la lecture. Ce changement n'ajoute donc pas une
+pagination incrementale pretendument complete. Les caches RPC restent actifs.
+
+Les seules nouvelles tables sont `historical_priority_state` et
+`historical_priority_wallets` (rotation, tentatives, cache de date d'activite).
+Les fichiers participant a l'empreinte du decodeur ne changent pas ; aucune
+invalidation ou migration des reconstructions existantes n'est necessaire.
+Le journal indique `queue_mode`, `fair_steps` et `inactive_refreshes_deferred`.
+Pour revenir a l'ancien ordre, mettre `HISTORICAL_PRIORITY_ENABLED=false` puis
+relancer le worker, sans effacer les tables ni modifier un checkpoint.
+
+Verification deterministe : a budget identique de dix etapes, sur douze wallets
+necessitant chacun un demarrage et trois decodages, le nouvel ordre termine au
+moins un dossier des le premier cycle, contre aucun avec l'ancien ordre. Ce test
+mesure le delai de completion d'un dossier, pas une reduction prouvee de facture
+ni un multiplicateur de vitesse du reseau.
