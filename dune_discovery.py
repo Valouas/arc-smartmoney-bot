@@ -39,13 +39,15 @@ class DuneDiscovery:
         self.cfg = cfg
         self.http = http or ExternalHTTP('dune', cfg.dune_api_key)
 
-    def fetch(self, now=None):
+    def fetch(self, now=None, *, execution_id=None, exhaustive=False):
         now = int(time.time()) if now is None else now
-        cfg, offset, execution, expected, produced = self.cfg, 0, None, None, None
+        if execution_id is not None and (not isinstance(execution_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',execution_id)):
+            raise ExternalError('invalid_execution')
+        cfg, offset, execution, expected, produced = self.cfg, 0, execution_id, None, None
         rows, rejected, seen = [], Counter(), set()
         excluded = infrastructure_addresses(cfg)
-        for _ in range(100):
-            limit = min(100, cfg.dune_max_candidates-offset)
+        while True:
+            limit = 100 if exhaustive else min(100, cfg.dune_max_candidates-offset)
             path = f'query/{cfg.dune_query_id}/results' if execution is None else f'execution/{execution}/results'
             data = self.http.get(path, {'limit':limit, 'offset':offset, 'allow_partial_results':'false'})
             current = data.get('execution_id')
@@ -84,13 +86,12 @@ class DuneDiscovery:
                 if type(following) is not int or following != consumed or following <= offset:
                     raise ExternalError('invalid_pagination')
             elif following is not None: raise ExternalError('invalid_pagination')
-            if consumed >= total or consumed >= cfg.dune_max_candidates:
+            if consumed >= total or (not exhaustive and consumed >= cfg.dune_max_candidates):
                 return {'rows':rows, 'rejected':dict(rejected), 'execution_id':execution,
                         'query_id':int(cfg.dune_query_id), 'execution_ended_at':produced,
                         'retrieved_at':now, 'selection_limited':consumed < total,
                         'total_rows':total, 'schema_version':1}
             offset = following
-        raise ExternalError('pagination_limit')
 
     def close(self): self.http.close()
 
