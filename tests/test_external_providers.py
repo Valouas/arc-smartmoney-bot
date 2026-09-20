@@ -81,6 +81,41 @@ def test_long_retry_after_deferred_instead_of_sleeping_or_retrying_early():
     sleep.assert_not_called()
 
 
+def test_live_zerion_pnl_subquota_exhausted_despite_available_global_quota():
+    headers={'ratelimit-limit':'500 500;w=86400','ratelimit-remaining':'0',
+             'ratelimit-reset':'3730','ratelimit-org-day-remaining':'1410',
+             'ratelimit-org-day-reset':'3730','ratelimit-org-second-remaining':'10'}
+    session=Mock();session.get.return_value=Response(status=429,headers=headers)
+    sleep=Mock();http=ExternalHTTP('zerion','SECRET',session,sleep=sleep)
+    with pytest.raises(ExternalError) as result:http.get('wallets/'+W+'/pnl')
+    assert result.value.category=='http_429' and result.value.retry_after==3730
+    assert session.get.call_count==1
+    sleep.assert_not_called()
+
+
+@pytest.mark.parametrize('prefix',['RateLimit','RateLimit-Org-Day','RateLimit-Org-Month','RateLimit-Org-Second'])
+def test_zerion_quota_reset_requires_matching_exhausted_counter(prefix):
+    from external_http import zerion_quota_delay
+    headers={prefix+'-Remaining':'0',prefix+'-Reset':'3600'}
+    assert zerion_quota_delay(headers)==3600
+    headers[prefix+'-Remaining']='1'
+    assert zerion_quota_delay(headers)==0
+
+
+@pytest.mark.parametrize('reset',['nan','inf','-1','invalid'])
+def test_invalid_zerion_reset_is_ignored(reset):
+    from external_http import zerion_quota_delay
+    assert zerion_quota_delay({'RateLimit-Remaining':'0','RateLimit-Reset':reset})==0
+
+
+def test_retry_after_longer_than_subquota_reset_is_preserved():
+    session=Mock();session.get.return_value=Response(status=429,headers={
+        'Retry-After':'7200','RateLimit-Remaining':'0','RateLimit-Reset':'3600'})
+    http=ExternalHTTP('zerion','SECRET',session,sleep=Mock())
+    with pytest.raises(ExternalError) as result:http.get('chains/')
+    assert result.value.retry_after==7200 and session.get.call_count==1
+
+
 def test_zerion_pacing_covers_chain_lookup_wallets_and_retries():
     now=[0.0]; times=[]
     def sleep(seconds): now[0]+=seconds

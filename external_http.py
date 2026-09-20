@@ -72,6 +72,25 @@ def retry_seconds(value, now):
     return max(0, delay) if math.isfinite(delay) else 0
 
 
+def zerion_quota_delay(headers):
+    """Zerion reset headers are seconds remaining, including endpoint subquotas.
+
+    A positive organisation balance does not override an exhausted PnL quota.
+    Only trust a reset when the corresponding remaining counter is exactly zero.
+    """
+    headers = {key.lower(): value for key, value in headers.items()}
+    delays = [0.0]
+    for prefix in ('ratelimit', 'ratelimit-org-day', 'ratelimit-org-month', 'ratelimit-org-second'):
+        try:
+            remaining = float(headers.get(prefix+'-remaining', 'nan'))
+            reset = float(headers.get(prefix+'-reset', 'nan'))
+        except (TypeError, ValueError):
+            continue
+        if remaining == 0 and math.isfinite(reset) and reset > 0:
+            delays.append(reset)
+    return max(delays)
+
+
 class ExternalHTTP:
     max_bytes = 2 * 1024 * 1024
     max_inline_delay = 30
@@ -109,6 +128,8 @@ class ExternalHTTP:
                         if status != 429 and not 500 <= status <= 599:
                             raise ExternalError(category)
                         delay = retry_seconds(response.headers.get('Retry-After'), self.clock())
+                        if self.provider == 'zerion' and status == 429:
+                            delay = max(delay, zerion_quota_delay(response.headers))
                     else:
                         if 'application/json' not in response.headers.get('Content-Type', '').lower():
                             raise ExternalError('content_type')
