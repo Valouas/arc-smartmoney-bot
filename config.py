@@ -26,6 +26,8 @@ class Settings:
     zerion_refresh_seconds: int = _i('ZERION_REFRESH_SECONDS', 3600)
     zerion_max_wallets_per_cycle: int = _i('ZERION_MAX_WALLETS_PER_CYCLE', 25)
     zerion_requests_per_second: float = _f('ZERION_REQUESTS_PER_SECOND', 1)
+    zerion_daily_request_limit: int = _i('ZERION_DAILY_REQUEST_LIMIT', 280)
+    zerion_budget_file: str = os.getenv('ZERION_BUDGET_FILE', 'data/zerion_budget.sqlite3')
     rpc_url: str = os.getenv("ARC_RPC_URL", "https://rpc.arc-scan.org")
     rpc_fallback_urls: tuple[str, ...] = tuple(u.strip() for u in os.getenv("ARC_RPC_FALLBACK_URLS", "").split(',') if u.strip())
     rpc_requests_per_second: float = _f("ARC_RPC_REQUESTS_PER_SECOND", 2)
@@ -147,7 +149,8 @@ class Settings:
     alchemy_sync_seconds: int = _i('ALCHEMY_SYNC_SECONDS',300)
 
     def __post_init__(self):
-        if (not math.isfinite(self.zerion_requests_per_second) or not 0 < self.zerion_requests_per_second <= 10
+        if (self.zerion_daily_request_limit < 1
+                or not math.isfinite(self.zerion_requests_per_second) or not 0 < self.zerion_requests_per_second <= 10
                 or self.external_poll_seconds < 60
                 or self.dune_refresh_seconds < 60 or self.zerion_refresh_seconds < 60
                 or not 1 <= self.dune_max_candidates <= 5000

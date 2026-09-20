@@ -161,19 +161,43 @@ Le 20 septembre 2026, la requête privée `8786588` a été créée puis exécut
 compte après les sondes de couverture et cette lecture était de 19,72 crédits
 sur 2 500 inclus (mesure ponctuelle, pas une estimation garantie par exécution).
 
-Profil local initial : cycle toutes les 1 800 s, 25 wallets Zerion par cycle,
-une requête/seconde, rafraîchissement d'un wallet au plus tôt après 21 600 s.
-Le lecteur Dune vérifie les derniers résultats toutes les 21 600 s. Cela vise
-environ 1 248 requêtes Zerion par jour au maximum hors retries et diagnostics
-(48 cycles de 25 wallets + un registre de chaînes), à comparer au quota réel
-du compte. Les premiers wallets encore jamais enrichis passent avant les
-rafraîchissements. Le pacing couvre aussi le registre de chaînes et les retries,
-par client ; ne pas cumuler des diagnostics manuels pendant un cycle.
+Profil local révisé après lecture du dashboard Demo (300 requêtes/jour) :
+cycle toutes les 1 800 s, jusqu'à 25 wallets Zerion par cycle, une requête/seconde,
+rafraîchissement d'un wallet au plus tôt après 86 400 s. Le lecteur Dune vérifie
+les derniers résultats toutes les 21 600 s. Les premiers wallets encore jamais
+enrichis passent avant les rafraîchissements.
+
+`ZERION_DAILY_REQUEST_LIMIT=280` plafonne désormais les tentatives HTTP,
+y compris les retries et le registre de chaînes. Le registre SQLite
+`ZERION_BUDGET_FILE=data/zerion_budget.sqlite3` est partagé par les clients
+locaux utilisant la même clé et ce même fichier. La réservation atomique a lieu
+avant chaque appel : un timeout consomme aussi une réservation. Un redémarrage
+ne remet pas le compteur à zéro. Le jour change à minuit UTC (02 h en Suisse
+le 20 septembre 2026). À épuisement, aucun appel supplémentaire n'est envoyé ;
+le prochain cycle éligible reprend après cette échéance. Une erreur reste une
+erreur, jamais un résultat vide valide. Seule une empreinte de clé est stockée.
+
+La marge de 20 requêtes couvre des usages hors bot ; les appels effectués par
+d'autres applications ou directement dans le dashboard ne sont pas comptés
+automatiquement. Ne pas supprimer le registre ni lancer des clients avec des
+chemins de budget différents pour un même compte. Le pacing reste par client :
+ne pas cumuler des diagnostics manuels pendant un cycle.
+
+Le lot exceptionnel autorisé le 20 septembre utilise au maximum 240 nouvelles
+tentatives, avec une réserve initiale conservatrice de 40 dans le compteur
+local pour les appels antérieurs. Cette réserve n'est pas une mesure de la
+consommation facturée. Il privilégie les pistes Dune, sauvegarde chaque métrique
+individuellement et respecte les échéances propres aux wallets déjà en erreur.
+Il n'accorde aucune autorité paper ou live supplémentaire aux résultats Zerion.
 Après une erreur temporaire avec report global, la pause du fournisseur est
 le maximum entre le délai du cycle et `Retry-After`, indépendamment du délai
 de rafraîchissement d'un wallet. Les 401/403 gardent une pause longue. Un délai
 déjà persisté avant ce correctif est conservé : il n'est pas raccourci alors
 que le `Retry-After` initial n'a pas été enregistré séparément.
+Pour le lot exceptionnel demandé ensuite, une sonde de reprise sur le registre
+des chaînes et de nouvelles réponses PnL ont confirmé la récupération. L'ancien
+état global 503 a alors été levé par comparaison de sa date exacte ; les délais
+individuels des wallets en erreur ont été conservés, sans retenter ces wallets.
 
 Le worker ne relance toujours pas de SQL automatiquement : utiliser Run dans
 la requête Dune pour produire une nouvelle exécution, puis le lecteur l'importe

@@ -77,7 +77,7 @@ class ExternalHTTP:
     max_inline_delay = 30
 
     def __init__(self, provider, key, session=None, sleep=time.sleep, clock=time.time,
-                 min_interval=0, monotonic=time.monotonic):
+                 min_interval=0, monotonic=time.monotonic, before_request=None):
         if provider not in ('dune', 'zerion'): raise ValueError('Unknown provider')
         if not key: raise ExternalError('missing_configuration')
         self.provider, self.session = provider, session or requests.Session()
@@ -89,6 +89,7 @@ class ExternalHTTP:
         if not math.isfinite(min_interval) or min_interval < 0:
             raise ValueError('Invalid external request interval')
         self.min_interval, self.monotonic, self.next_request = min_interval, monotonic, 0.0
+        self.before_request = before_request
 
     def get(self, path, params=None):
         if not re.fullmatch(r'[A-Za-z0-9_/-]+', path) or '..' in path:
@@ -99,6 +100,7 @@ class ExternalHTTP:
                 remaining = self.next_request - self.monotonic()
                 if remaining > 0: self.sleep(remaining)
                 self.next_request = self.monotonic() + self.min_interval
+                if self.before_request is not None: self.before_request()
                 with self.session.get(self.base+path, params=params, headers=self.headers,
                         auth=self.auth, timeout=(5, 20), allow_redirects=False, stream=True) as response:
                     status = response.status_code
