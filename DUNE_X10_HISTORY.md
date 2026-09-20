@@ -76,6 +76,34 @@ Set-Location "C:\Users\Valen\Desktop\bot\arc_smartmoney_bot\audit-issue-1"
 Le verrou refuse un second collecteur sur ce manifeste. Les processus d'analyse
 et de paper existants peuvent continuer ; leurs checkpoints ne sont pas modifiés.
 
+## Résultat de la première collecte complète
+
+Exécution le 20 septembre, cutoff fixe **20 septembre 2026 à 20:43:20 UTC** :
+
+| Période des transactions du wallet | Wallets retournés |
+|---|---:|
+| 27–31 mai | 0 |
+| Juin | 0 |
+| Juillet | 2 |
+| Août | 7 |
+| Septembre jusqu'au cutoff | 7 211 |
+
+Après déduplication inter-périodes : **7 216 wallets**, dont **6 678 nouveaux
+candidats locaux** et 683 avec un seul achat observé dans le périmètre couvert.
+Les 72 pages pleines et la dernière page de septembre ont toutes été récupérées
+sur la même exécution `01M309VT65F9ZA4H2K2W2PSM4V`. Aucun rejet de ligne n'a été
+enregistré sur ces cinq périodes. L'usage du compte Dune est passé de 20,443 à
+174,049 crédits, soit environ **153,606 crédits** pendant la collecte, sur
+2 500 inclus. La sonde de couverture antérieure est hors de ce delta.
+
+Les 301 snapshots historiques valides présents avant la collecte sont conservés.
+Les nouveaux wallets restent des candidats de recherche. La découverte d'un
+achat avant x10 n'établit ni profit réalisé, ni répétabilité, ni copie exécutable.
+
+Rapports locaux : `data/dune_x10_history.wallets.json` et
+`data/dune_x10_history.wallets.csv`. Les cinq réponses complètes et le manifeste
+restent disponibles dans `data/dune_x10_history.*.json`.
+
 Références : [exécuter une requête](https://docs.dune.com/api-reference/executions/endpoint/execute-query),
 [pagination des résultats](https://docs.dune.com/api-reference/executions/pagination),
 [usage des crédits](https://docs.dune.com/api-reference/usage/endpoint/get-usage).
