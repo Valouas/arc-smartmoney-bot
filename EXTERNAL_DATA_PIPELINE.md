@@ -189,6 +189,24 @@ local pour les appels antérieurs. Cette réserve n'est pas une mesure de la
 consommation facturée. Il privilégie les pistes Dune, sauvegarde chaque métrique
 individuellement et respecte les échéances propres aux wallets déjà en erreur.
 Il n'accorde aucune autorité paper ou live supplémentaire aux résultats Zerion.
+
+### Passage local au plan Developer gratuit
+
+La capture du compte fournie ensuite le 20 septembre affiche Developer actif,
+2 000 requêtes par jour et 3 RPS. Le profil local passe donc à 1 900 tentatives
+par jour, 2 requêtes/seconde, jusqu'à 100 wallets par cycle et 900 s entre cycles.
+Le rafraîchissement des wallets reste à 86 400 s. La marge quotidienne est de
+100 requêtes ; le compteur existant est conservé même si le nouveau dashboard
+affiche zéro après changement de plan. Les retries restent comptés.
+
+Le lot exceptionnel déjà en cours conserve ses limites de 240 tentatives et
+1 requête/seconde ; il n'est pas relancé ni dupliqué. Le worker régulier utilise
+le nouveau profil après redémarrage. Leur budget SQLite est commun ; pendant
+ce chevauchement, leurs cadences configurées totalisent au maximum 3 RPS.
+Les erreurs et Retry-After peuvent réduire le débit effectif. Les valeurs par
+défaut restent adaptées au plan Demo ; les overrides Developer sont indiqués
+dans `.env.example` et doivent correspondre au plan effectivement actif.
+
 Après une erreur temporaire avec report global, la pause du fournisseur est
 le maximum entre le délai du cycle et `Retry-After`, indépendamment du délai
 de rafraîchissement d'un wallet. Les 401/403 gardent une pause longue. Un délai
