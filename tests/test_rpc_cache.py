@@ -124,3 +124,46 @@ def test_block_by_hash_cached_but_full_and_header_requests_separate(tmp_path):
     for _ in range(2):p.make_request('eth_getBlockByHash',[B,False])
     p.make_request('eth_getBlockByHash',[B,True])
     assert sum(m=='eth_getBlockByHash' for _,m,_ in http.calls)==2
+
+
+def test_explicit_historical_header_cache_survives_restart_but_anchors_stay_fresh(tmp_path):
+    p,http=provider(tmp_path,[header(),header(1,B)])
+    with p.historical_headers():
+        assert p.make_request('eth_getBlockByNumber',['0x1',False])['result']==header(1,B)
+    other,network=provider(tmp_path,[header(1,F)])
+    with other.historical_headers():
+        assert other.make_request('eth_getBlockByNumber',['0x1',False])['result']==header(1,B)
+    # Outside the evidence context, even the same number must be read fresh.
+    assert other.make_request('eth_getBlockByNumber',['0x1',False])['result']==header(1,F)
+    assert [m for _,m,_ in network.calls]==['eth_chainId','eth_getBlockByNumber']
+
+
+def test_historical_header_above_finality_is_never_reused(tmp_path):
+    p,http=provider(tmp_path,[header(),header(101,B),header(101,B)])
+    with p.historical_headers():
+        for _ in range(2):p.make_request('eth_getBlockByNumber',['0x65',False])
+    assert sum(params==['0x65',False] for _,_,params in http.calls)==2
+
+
+def test_header_context_restored_on_error_and_does_not_cache_tags_or_full_blocks(tmp_path):
+    p,http=provider(tmp_path,[header(),header(),header(1,B),header(1,B)])
+    with pytest.raises(ValueError):
+        with p.historical_headers():
+            p.make_request('eth_getBlockByNumber',['latest',False])
+            p.make_request('eth_getBlockByNumber',['latest',False])
+            p.make_request('eth_getBlockByNumber',['0x1',True])
+            raise ValueError('test')
+    p.make_request('eth_getBlockByNumber',['0x1',False])
+    with sqlite3.connect(p.cache.path) as db:
+        assert db.execute('SELECT COUNT(*) FROM rpc_cache_entries').fetchone()[0]==0
+
+
+def test_cached_number_header_checks_finality_and_wrong_number_response(tmp_path,monkeypatch):
+    monkeypatch.setattr('rpc_transport.time.time',lambda:100)
+    p,http=provider(tmp_path,[header(),header(2,B),header(1,B),header(110),header(100,B)])
+    with p.historical_headers():
+        with pytest.raises(RPCError):p.make_request('eth_getBlockByNumber',['0x1',False])
+        p.make_request('eth_getBlockByNumber',['0x1',False])
+        monkeypatch.setattr('rpc_transport.time.time',lambda:161)
+        with pytest.raises(RPCError,match='finality_changed'):
+            p.make_request('eth_getBlockByNumber',['0x1',False])

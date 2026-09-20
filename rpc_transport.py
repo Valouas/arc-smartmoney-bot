@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import json
-from contextlib import closing
+from contextlib import closing, contextmanager
+from threading import local
 import logging
 import math
 from pathlib import Path
@@ -296,6 +297,7 @@ class ResilientRPCProvider(JSONBaseProvider):
         self.sleep = sleep
         self.active = 0
         self.verified = set()
+        self._history_reads = local()
         self.global_ccip_read_enabled = False
         if cache is None:
             from config import SETTINGS
@@ -303,6 +305,16 @@ class ResilientRPCProvider(JSONBaseProvider):
                 from rpc_cache import RPCCache
                 cache = RPCCache(SETTINGS.rpc_cache_file)
         self.cache = cache
+
+    @contextmanager
+    def historical_headers(self):
+        """Opt in for reconstruction evidence only; anchors/live reads stay fresh."""
+        previous = getattr(self._history_reads, 'headers', False)
+        self._history_reads.headers = True
+        try:
+            yield
+        finally:
+            self._history_reads.headers = previous
 
     def _finalized_for_cache(self,index):
         """Optional feature probe; explicit canonical checks remain uncached."""
@@ -424,7 +436,11 @@ class ResilientRPCProvider(JSONBaseProvider):
                         self.active = index
                         return identity
                 finalized=-1
-                if self.cache and method in {'eth_getTransactionByHash','eth_getTransactionReceipt','eth_getBlockByHash'}:
+                historical_header = (method == 'eth_getBlockByNumber'
+                    and getattr(self._history_reads, 'headers', False)
+                    and len(params) == 2 and params[1] is False
+                    and isinstance(params[0], str) and _quantity(params[0]))
+                if self.cache and (historical_header or method in {'eth_getTransactionByHash','eth_getTransactionReceipt','eth_getBlockByHash'}):
                     try:
                         finalized=self._finalized_for_cache(index)
                         cached=self.cache.get(self.chain_id,method,params,finalized) if finalized>=0 else None

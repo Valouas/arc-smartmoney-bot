@@ -68,6 +68,42 @@ retard paper, les dossiers terminés et les coûts avant de demander plus de dé
 
 ## Activer ou revenir au mode précédent
 
+### Lectures historiques réutilisables
+
+Le worker historique conserve désormais ses threads, connexions et caches de
+métadonnées entre les lots. Les métadonnées demandées se limitent au symbole et
+aux décimales utilisés par le décodeur ; elles expirent après 60 secondes et le
+cache de chaque client est borné à 4 096 tokens. Un échec RPC ne devient jamais
+une métadonnée vide valide.
+
+Les en-têtes numériques historiques peuvent être réutilisés dans le cache disque
+uniquement sous une hauteur finalisée vérifiée. Les ancres de début/fin de dossier,
+les contrôles de réorganisation et les lectures live restent frais. Le cache
+vérifie toujours la réponse, son empreinte et la correspondance avec la requête.
+Sans finalité disponible, la lecture réseau habituelle reste obligatoire.
+
+Les résultats arrivent en parallèle mais sont écrits dans l'ordre, transaction
+par transaction, par le thread principal. Un échec conserve le préfixe terminé
+et la reprise recommence à la première transaction non terminée.
+
+`HISTORICAL_ACTIVE_POLL_SECONDS=5` raccourcit seulement la pause après un cycle
+actif sans erreur. Une file vide ou un cycle incomplet garde la pause configurée
+par `HISTORICAL_POLL_SECONDS`. Les délais de reprise des dossiers, la priorité du
+paper live et les plafonds RPC partagés ne changent pas.
+
+Le décodeur et son empreinte de compatibilité ne changent pas. Les transactions
+déjà reconstruites sous la même empreinte restent réutilisables après contrôle
+d'ancre et de couverture. Les anciennes analyses sans provenance restent
+conservées, mais ne sont pas déclarées compatibles par supposition. Aucune
+réinitialisation de base, de dossier ou de checkpoint n'est nécessaire.
+
+Comparaison locale bornée : quatre transactions réelles, deux lots, deux workers,
+plafond partagé inchangé. Après remplissage du cache, l'ancien parcours a produit
+64 requêtes HTTP en 27,157 s, le nouveau 30 en 12,843 s, avec des payloads
+strictement identiques. Les appels eth_call passent de 16 à 8. Le contrôle de
+finalité périodique et la concurrence live influencent ces mesures ; elles ne
+garantissent pas une accélération globale équivalente sur tous les dossiers.
+
 Arrêter proprement avec `ARRETER_BOT.bat`, modifier uniquement les variables
 ci-dessus dans `.env`, puis relancer `LANCER_BOT.bat`. Pour reprendre le scanner
 V4 à son checkpoint conservé : `RESEARCH_PAPER_ONLY=false`. Ne supprimer aucune

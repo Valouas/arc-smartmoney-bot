@@ -77,6 +77,7 @@ class Settings:
     historical_transactions_per_step: int = _i('HISTORICAL_TRANSACTIONS_PER_STEP', 10)
     historical_rpc_workers: int = _i('HISTORICAL_RPC_WORKERS', 1)
     historical_poll_seconds: float = _f('HISTORICAL_POLL_SECONDS', 60)
+    historical_active_poll_seconds: float = _f('HISTORICAL_ACTIVE_POLL_SECONDS', 5)
     historical_refresh_seconds: int = _i('HISTORICAL_REFRESH_SECONDS', 21600)
     historical_priority_enabled: bool = os.getenv('HISTORICAL_PRIORITY_ENABLED', 'true').lower() == 'true'
     historical_focus_steps: int = _i('HISTORICAL_FOCUS_STEPS', 4)
@@ -159,6 +160,8 @@ class Settings:
             raise ValueError('HISTORICAL_RPC_WORKERS must be between 1 and 16')
         if not math.isfinite(self.historical_poll_seconds) or self.historical_poll_seconds < 1:
             raise ValueError('HISTORICAL_POLL_SECONDS must be finite and at least 1')
+        if not math.isfinite(self.historical_active_poll_seconds) or self.historical_active_poll_seconds < 1:
+            raise ValueError('HISTORICAL_ACTIVE_POLL_SECONDS must be finite and at least 1')
         if not 1 <= self.alchemy_webhook_port <= 65535:
             raise ValueError('Invalid webhook port')
         if (min(self.historical_transactions_per_step, self.historical_refresh_seconds,

@@ -5,12 +5,18 @@ import time
 
 from arcscan import ArcscanClient
 from config import SETTINGS
-from historical_collector import HistoricalCollector
+from historical_efficiency import EfficientCollector as HistoricalCollector
 from historical_priority import PriorityCollector
 from historical_report import build_report, publish, ReportExportError
 from process_lock import ProcessLock
 from rpc import ArcRPC
 from storage import Storage
+
+
+def cycle_pause(result, cfg):
+    if result.get('wallet_steps', 0) > 0 and not result.get('incomplete_steps', 0):
+        return min(cfg.historical_poll_seconds, cfg.historical_active_poll_seconds)
+    return cfg.historical_poll_seconds
 
 
 def main(argv=None):
@@ -34,15 +40,18 @@ def main(argv=None):
         db = Storage(args.db)
         arc = ArcscanClient(SETTINGS.arcscan_api_url)
         rpc = ArcRPC(SETTINGS.rpc_url, SETTINGS.chain_id)
+        owner = None
         try:
             rpc.sanity_check()
             collector = HistoricalCollector(db, rpc, arc, SETTINGS)
+            owner = collector
             if SETTINGS.historical_priority_enabled:
                 collector = PriorityCollector(collector)
             while True:
                 started = time.monotonic()
                 result = collector.cycle()
                 collected = time.monotonic()
+                pause = cycle_pause(result, SETTINGS)
                 published = True
                 try:
                     report()
@@ -53,13 +62,17 @@ def main(argv=None):
                        'report_seconds': round(time.monotonic()-collected, 3),
                        'rpc_workers': SETTINGS.historical_rpc_workers,
                        'report_published': published,
-                       'pause_seconds': 0 if args.once else SETTINGS.historical_poll_seconds}, flush=True)
+                       'pause_seconds': 0 if args.once else pause}, flush=True)
                 if args.once: return 0 if published else 1
-                time.sleep(SETTINGS.historical_poll_seconds)
+                time.sleep(pause)
         except KeyboardInterrupt:
             return 0
         finally:
-            db.db.close(); arc.s.close(); rpc.w3.provider.session.close()
+            try:
+                if owner is not None:
+                    owner.close()
+            finally:
+                db.db.close(); arc.s.close(); rpc.w3.provider.session.close()
 
 
 if __name__ == '__main__':

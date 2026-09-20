@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 import sqlite3
 
-METHODS = {'eth_getTransactionByHash','eth_getTransactionReceipt','eth_getBlockByHash'}
+METHODS = {'eth_getTransactionByHash','eth_getTransactionReceipt','eth_getBlockByHash','eth_getBlockByNumber'}
+BLOCK_METHODS = {'eth_getBlockByHash','eth_getBlockByNumber'}
 
 
 class RPCCache:
@@ -57,8 +58,8 @@ class RPCCache:
         if row and hashlib.sha256(row[0].encode()).hexdigest()==row[1]:
             try:
                 candidate=json.loads(row[0])
-                number=candidate.get('number') if method=='eth_getBlockByHash' else candidate.get('blockNumber')
-                block_hash=candidate.get('hash') if method=='eth_getBlockByHash' else candidate.get('blockHash')
+                number=candidate.get('number') if method in BLOCK_METHODS else candidate.get('blockNumber')
+                block_hash=candidate.get('hash') if method in BLOCK_METHODS else candidate.get('blockHash')
                 if (_valid_result(method,candidate) and _matches_request(method,params,candidate)
                         and _hex(block_hash,32) and int(number,16)<=finalized): result=candidate
             except (ValueError,TypeError,KeyError,AttributeError): pass
@@ -67,8 +68,8 @@ class RPCCache:
 
     def put(self,chain,method,params,result,finalized):
         from rpc_transport import _hex
-        number=result.get('number') if method=='eth_getBlockByHash' else result.get('blockNumber')
-        block_hash=result.get('hash') if method=='eth_getBlockByHash' else result.get('blockHash')
+        number=result.get('number') if method in BLOCK_METHODS else result.get('blockNumber')
+        block_hash=result.get('hash') if method in BLOCK_METHODS else result.get('blockHash')
         if not _hex(block_hash,32) or number is None or int(number,16)>finalized: return
         payload=self.key(result)
         with closing(self.connect()) as db,db:
