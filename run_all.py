@@ -142,6 +142,67 @@ def launch(command,logfile):
                                 creationflags=flags,start_new_session=os.name!='nt')
 
 
+def launch_worker(role):
+    # Native crashes otherwise bypass every Python exception handler. The
+    # diagnostic contains stacks, not locals, request bodies or credentials.
+    return launch([sys.executable,'-X','faulthandler','-u',str(ROOT/'run_all.py'),
+                   '--worker',role],LOGS/(role+'.log'))
+
+
+class HistoricalRecovery:
+    """Bounded recovery of the independent research worker, never of paper.
+
+    No preparation/export/reset runs during recovery. The worker resumes its
+    persisted queue under the same locks. Three launches per supervisor run
+    prevents an unattended crash/reconstruction loop from consuming credit.
+    """
+    delays=(5,30,120)
+
+    def __init__(self):
+        self.attempts=0
+        self.due=None
+        self.disabled=False
+
+    def tick(self, children):
+        role='historical_analysis'
+        p=children.get(role)
+        if p is None or p.poll() is None or self.disabled: return
+        if self.due is None:
+            record_event('child_exited',role=role,child_pid=p.pid,exit_code=p.poll())
+            self.schedule()
+        if self.disabled or time.monotonic()<self.due or STOP.exists(): return
+        # A redirector may have exited while an actual worker still owns the
+        # database. Never launch over that owner or kill an unowned process.
+        self.attempts+=1
+        try:
+            if busy('data/historical_analysis.worker.lock') or busy('data/arc_bot.sqlite3.historical.lock'):
+                self.disable('ownership_busy')
+                return
+            children[role]=launch_worker(role)
+        except Exception as error:
+            record_event('historical_restart_failed',role=role,**error_fields(error))
+            self.schedule()
+            return
+        self.due=None
+        record_event('historical_restarted',role=role,child_pid=children[role].pid,
+                     reason='attempt_'+str(self.attempts))
+        print('Analyse historique relancee depuis ses checkpoints | tentative='+str(self.attempts),flush=True)
+
+    def schedule(self):
+        if self.attempts>=len(self.delays):
+            self.disable('restart_limit')
+            return
+        delay=self.delays[self.attempts]
+        self.due=time.monotonic()+delay
+        record_event('historical_restart_scheduled',role='historical_analysis',reason='delay_'+str(delay))
+        print('Analyse historique arretee ; reprise dans '+str(delay)+' s. Paper live maintenu.',flush=True)
+
+    def disable(self, reason):
+        self.disabled=True
+        record_event('historical_recovery_stopped',role='historical_analysis',reason=reason)
+        print('Analyse historique arretee : intervention requise | reason='+reason+'. Paper live maintenu.',flush=True)
+
+
 def shutdown(children,grace=25):
     """Stop only children we created; a reused tunnel is never in this list."""
     alive=[p for p in children.values() if p.poll() is None]
@@ -206,11 +267,11 @@ def supervise(cfg):
         record_event('startup_backup_verified' if generation else 'startup_backup_no_existing_database')
         if generation: print('Sauvegarde SQLite verifiee avant demarrage.',flush=True)
     prepare(cfg)
-    children={}; url=None; warned=set(); publisher=StatePublisher()
+    children={}; url=None; warned=set(); publisher=StatePublisher(); recovery=HistoricalRecovery()
     reason='startup_failure'; operation='launch_child'
     try:
         for role in roles_for(cfg):
-            children[role]=launch([sys.executable,'-u',str(ROOT/'run_all.py'),'--worker',role],LOGS/(role+'.log'))
+            children[role]=launch_worker(role)
             record_event('child_started',role=role,child_pid=children[role].pid)
             print('Demarre : '+role,flush=True)
         operation='start_tunnel'
@@ -230,7 +291,9 @@ def supervise(cfg):
         reason='unexpected_error'
         while not STOP.exists():
             operation='check_children'
+            recovery.tick(children)
             for role,p in children.items():
+                if role=='historical_analysis': continue
                 if p.poll() is None or role in warned: continue
                 warned.add(role)
                 record_event('child_exited',role=role,child_pid=p.pid,exit_code=p.poll())

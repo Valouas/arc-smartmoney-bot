@@ -56,6 +56,7 @@ def test_existing_tunnel_reused_and_not_stopped(local,cfg,monkeypatch):
     monkeypatch.setattr(run_all.time,'sleep',lambda _:run_all.STOP.write_text('stop'))
     run_all.supervise(cfg)
     assert len(children)==8 and all('--worker' in c for c,_ in children)
+    assert all(c[1:4]==['-X','faulthandler','-u'] for c,_ in children)
     assert set(stop.call_args.args[0])==set(run_all.roles_for(cfg))
     state=json.loads(run_all.STATE.read_text())
     assert state['status']=='STOPPED' and state['webhook_url'].startswith('https://example.')
@@ -259,3 +260,111 @@ def test_actual_windows_reader_lock_preserves_json_and_recovers(local,monkeypatc
         assert not list(run_all.STATE.parent.glob('run_all_state.json.*.tmp'))
     assert publisher.publish({},None,'STOPPED')
     assert json.loads(run_all.STATE.read_text())['status']=='STOPPED'
+
+
+@pytest.fixture
+def recovery_case(local,monkeypatch):
+    now=[0]
+    monkeypatch.setattr(run_all.time,'monotonic',lambda:now[0])
+    failed=Mock(pid=123); failed.poll.return_value=0xC0000005
+    paper=Mock(pid=456); paper.poll.return_value=None
+    children={'historical_analysis':failed,'paper_copy':paper,'alchemy_webhook':paper}
+    return run_all.HistoricalRecovery(),children,now
+
+
+def test_native_history_crash_keeps_live_and_resumes_without_preparation(recovery_case,local,monkeypatch):
+    recovery,children,now=recovery_case
+    import sqlite3
+    path=local/'data'/'recovery.sqlite3'; path.parent.mkdir(exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE state (next_block INTEGER, payload TEXT)')
+        db.execute("INSERT INTO state VALUES(12345,'committed evidence')")
+    before=path.read_bytes()
+    new=Mock(pid=789); new.poll.return_value=None
+    launch=Mock(return_value=new); prepare=Mock(); stop=Mock()
+    monkeypatch.setattr(run_all,'launch_worker',launch)
+    monkeypatch.setattr(run_all,'prepare',prepare)
+    monkeypatch.setattr(run_all,'shutdown',stop)
+    paper=children['paper_copy']; webhook=children['alchemy_webhook']
+    recovery.tick(children)
+    now[0]=4; recovery.tick(children); launch.assert_not_called()
+    now[0]=5; recovery.tick(children)
+    assert children['historical_analysis'] is new
+    assert children['paper_copy'] is paper and children['alchemy_webhook'] is webhook
+    assert path.read_bytes()==before
+    prepare.assert_not_called(); stop.assert_not_called()
+    launch.assert_called_once_with('historical_analysis')
+    now[0]=10000; recovery.tick(children)
+    assert launch.call_count==1
+
+
+@pytest.mark.parametrize('failure',['native','launch','lock_error'])
+def test_history_recovery_is_bounded_and_backoff_nonblocking(recovery_case,monkeypatch,failure):
+    recovery,children,now=recovery_case
+    dead=Mock(pid=789); dead.poll.return_value=0xC0000005
+    launch=Mock(return_value=dead)
+    if failure=='launch': launch.side_effect=PermissionError('secret URL')
+    if failure=='lock_error': monkeypatch.setattr(run_all,'busy',Mock(side_effect=PermissionError('secret URL')))
+    monkeypatch.setattr(run_all,'launch_worker',launch)
+    sleep=Mock(); monkeypatch.setattr(run_all.time,'sleep',sleep)
+    recovery.tick(children)
+    for due in (5,35,155):
+        assert recovery.due==due
+        now[0]=due; recovery.tick(children); recovery.tick(children)
+    assert recovery.disabled and recovery.attempts==3
+    now[0]=9999; recovery.tick(children)
+    assert launch.call_count==(0 if failure=='lock_error' else 3)
+    sleep.assert_not_called()
+    assert events()[-1]['reason']=='restart_limit'
+    assert 'secret' not in json.dumps(events())
+
+
+@pytest.mark.parametrize('lock',['data/historical_analysis.worker.lock','data/arc_bot.sqlite3.historical.lock'])
+def test_history_restart_refuses_a_surviving_owner(recovery_case,monkeypatch,lock):
+    recovery,children,now=recovery_case
+    launch=Mock(); monkeypatch.setattr(run_all,'launch_worker',launch)
+    monkeypatch.setattr(run_all,'busy',lambda path:path==lock)
+    recovery.tick(children); now[0]=5; recovery.tick(children)
+    assert recovery.disabled and events()[-1]['reason']=='ownership_busy'
+    launch.assert_not_called()
+
+
+def test_stop_during_backoff_never_restarts_history(recovery_case,monkeypatch):
+    recovery,children,now=recovery_case
+    launch=Mock(); monkeypatch.setattr(run_all,'launch_worker',launch)
+    recovery.tick(children); now[0]=5
+    run_all.STOP.write_text('stop')
+    recovery.tick(children); launch.assert_not_called()
+
+
+def test_supervisor_keeps_other_workers_until_explicit_stop_after_history_crash(local,cfg,monkeypatch):
+    monkeypatch.setattr(run_all,'preflight',lambda _:None)
+    monkeypatch.setattr(run_all,'prepare',lambda _:None)
+    monkeypatch.setattr(run_all,'tunnel',lambda _:'https://example.ngrok.app/webhook/alchemy')
+    now=[0]; launches=[]; states=[]
+    monkeypatch.setattr(run_all.time,'monotonic',lambda:now[0])
+    def launch(command,path):
+        role=command[-1]
+        p=Mock(pid=100+len(launches))
+        p.poll.return_value=0xC0000005 if role=='historical_analysis' else None
+        launches.append((role,p)); return p
+    def state(children,url,status):
+        states.append((status,{role:p.poll() for role,p in children.items()}))
+    stop=Mock()
+    def sleep(delay):
+        stop.assert_not_called()
+        now[0]+=delay
+        if now[0]>=160: run_all.STOP.write_text('stop')
+    monkeypatch.setattr(run_all,'launch',launch)
+    monkeypatch.setattr(run_all,'save_state',state)
+    monkeypatch.setattr(run_all,'shutdown',stop)
+    monkeypatch.setattr(run_all.time,'sleep',sleep)
+    run_all.supervise(cfg)
+    assert sum(role=='historical_analysis' for role,_ in launches)==4
+    assert sum(role=='paper_copy' for role,_ in launches)==1
+    assert sum(role=='alchemy_webhook' for role,_ in launches)==1
+    assert states[-2][0]=='RUNNING'
+    assert states[-2][1]['historical_analysis']==0xC0000005
+    assert states[-2][1]['paper_copy'] is None
+    assert events()[-1]['reason']=='stop_file'
+    stop.assert_called_once()
