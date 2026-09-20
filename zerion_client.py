@@ -69,7 +69,8 @@ class ZerionClient:
     def __init__(self, cfg, http=None):
         if cfg.chain_id != 5042: raise ExternalError('wrong_chain')
         self.cfg = cfg
-        self.http = http or ExternalHTTP('zerion', cfg.zerion_api_key)
+        self.http = http or ExternalHTTP('zerion', cfg.zerion_api_key,
+                                       min_interval=1 / cfg.zerion_requests_per_second)
         self.resolved = None
 
     def resolve_arc(self):

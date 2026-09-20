@@ -81,6 +81,28 @@ def test_long_retry_after_deferred_instead_of_sleeping_or_retrying_early():
     sleep.assert_not_called()
 
 
+def test_zerion_pacing_covers_chain_lookup_wallets_and_retries():
+    now=[0.0]; times=[]
+    def sleep(seconds): now[0]+=seconds
+    responses=iter([Response({'ok':1}),Response(status=429,headers={'Retry-After':'2'}),Response({'ok':2})])
+    def get(*args,**kwargs):
+        times.append(now[0]);return next(responses)
+    session=Mock();session.get.side_effect=get
+    http=ExternalHTTP('zerion','SECRET',session,sleep=sleep,min_interval=1,monotonic=lambda:now[0])
+    http.get('chains/');http.get('wallets/'+W+'/pnl')
+    assert len(times)==3 and all(b-a>=1 for a,b in zip(times,times[1:]))
+    assert times[2]-times[1]>=2
+
+
+@pytest.mark.parametrize('rate',[0,-1,float('nan'),float('inf'),11])
+def test_invalid_zerion_rate_rejected(cfg,rate):
+    with pytest.raises(ValueError):replace(cfg,zerion_requests_per_second=rate)
+
+
+def test_external_poll_cannot_be_tight_loop(cfg):
+    with pytest.raises(ValueError):replace(cfg,external_poll_seconds=0)
+
+
 @pytest.mark.parametrize('status',[400,401,403,404,302])
 def test_nonretryable_status_and_no_secret_leak(status):
     session=Mock();session.get.return_value=Response(status=status,body=b'SECRET')

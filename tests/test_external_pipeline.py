@@ -117,6 +117,23 @@ def test_zerion_cycle_cap_and_retry_after_prevent_request_storm(local,cfg):
         assert client.pnl.call_count==1
 
 
+@pytest.mark.parametrize('retry_after',[60,7200])
+def test_temporary_provider_pause_is_separate_from_wallet_refresh(local,cfg,retry_after):
+    cfg=replace(cfg,dune_enabled=False,external_poll_seconds=1800,zerion_refresh_seconds=21600)
+    for w in (W,W2):local.upsert_discovery_candidate(w,'0x'+'3'*40,1)
+    failing=Mock();failing.pnl.side_effect=ExternalError('http_503',retry_after)
+    with closing(ExternalStore(local.path)) as store:
+        cycle(store,cfg,now=NOW,zerion_factory=lambda cfg:failing)
+        delay=max(1800,retry_after)
+        assert not store.due('zerion','',NOW+delay-1)
+        assert store.due('zerion','',NOW+delay)
+        assert not store.due('zerion',W,NOW+delay)
+        good=Mock();good.pnl.return_value=normalize_pnl(pnl(W2),W2,'arc',NOW+delay)
+        result=cycle(store,cfg,now=NOW+delay,zerion_factory=lambda cfg:good)
+        assert result['zerion_wallets']==1 and not result['errors']
+        assert good.pnl.call_args.args[0]==W2
+
+
 def test_infrastructure_excluded_from_both_ingestion_and_enrichment(local,cfg):
     Path(cfg.trusted_dex_registry).write_text(json.dumps({'chain_id':5042,'emitters':[{'address':W}]}))
     z=Mock()

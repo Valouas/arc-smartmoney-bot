@@ -52,7 +52,10 @@ def cycle(store, cfg, *, dune_only=False, now=None, dune_factory=DuneDiscovery, 
                             if error.category in ('http_401','http_403','http_429') or error.retry_after:
                                 raise
             except ExternalError as error:
-                with store.db: store.record_attempt('zerion','',accepted_at(),max(cfg.zerion_refresh_seconds,error.retry_after),error.category)
+                # Refreshing one wallet and retrying an unavailable provider are
+                # separate schedules. Always honor the provider's Retry-After.
+                pause = cfg.zerion_refresh_seconds if error.category in ('http_401','http_403') else cfg.external_poll_seconds
+                with store.db: store.record_attempt('zerion','',accepted_at(),max(pause,error.retry_after),error.category)
                 if 'zerion:'+error.category not in result['errors']: result['errors'].append('zerion:'+error.category)
     return result
 
@@ -73,7 +76,7 @@ def run(*, once=False, dune_only=False, db_path='data/arc_bot.sqlite3', cfg=SETT
                     print('External cycle deferred | category='+type(error).__name__,flush=True)
                     code = 1
                 if once: return code
-                time.sleep(min(cfg.dune_refresh_seconds,cfg.zerion_refresh_seconds))
+                time.sleep(min(cfg.external_poll_seconds,cfg.dune_refresh_seconds,cfg.zerion_refresh_seconds))
     except KeyboardInterrupt: return 0
     except Exception as error:
         category = error.category if isinstance(error,ExternalError) else type(error).__name__

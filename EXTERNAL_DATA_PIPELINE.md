@@ -110,6 +110,7 @@ Dans le `.env` local (jamais dans Git) :
 
 ```dotenv
 EXTERNAL_DISCOVERY_ENABLED=false
+EXTERNAL_POLL_SECONDS=900
 DUNE_ENABLED=false
 DUNE_API_KEY=
 DUNE_QUERY_ID=
@@ -119,6 +120,7 @@ ZERION_ENABLED=false
 ZERION_API_KEY=
 ZERION_REFRESH_SECONDS=3600
 ZERION_MAX_WALLETS_PER_CYCLE=25
+ZERION_REQUESTS_PER_SECOND=1
 ```
 
 Renseigner les clés dans `.env`, pas dans le chat ou une commande PowerShell.
@@ -126,7 +128,56 @@ Renseigner les clés dans `.env`, pas dans le chat ou une commande PowerShell.
 pas l'URL du dashboard. Aucune requête Dune Arc n'est inventée par le bot.
 Les téléchargements Dune consomment aussi des crédits même sans exécution SQL.
 Zerion dépend du plan et des droits de la clé. Les clients n'ont pas été validés
-avec vos comptes tant que les clés et la requête ne sont pas configurées.
+avec un compte tant que ses clés et sa requête ne sont pas configurées.
+
+## Requête Arc préparée et première activation
+
+`queries/dune_arc_winner_candidates.sql` utilise les schémas vérifiés dans le
+catalogue Dune : `uniswap_v4_arc.poolmanager_evt_initialize`,
+`uniswap_v4_arc.poolmanager_evt_swap`, `erc20_arc.evt_transfer`.
+La couverture Arc de `dex.trades` n'étant pas annoncée dans le catalogue consulté,
+la requête ne dépend pas de cette table. Les pools sont limités au PoolManager
+reviewed `0x8366a39cc670b4001a1121b8f6a443a643e40951`.
+
+La fenêtre initiale est de sept jours. Un wallet doit avoir reçu un token et
+payé de l'USDC (ou l'inverse) dans les transferts nets d'une transaction à un
+seul swap sur ce PoolManager. Le wallet est issu des transferts, pas du sender
+du routeur ni automatiquement du tx.from. Les smart accounts restent possibles.
+Les swaps multi-étapes et les paiements sans événements ERC20 USDC sont hors de
+cette couverture ; leur absence ne supprime aucun wallet connu localement.
+L'USDC natif du pool est coté avec 18 décimales et le règlement ERC20 avec six.
+
+Le rapport d'une médiane horaire future de prix de swaps au prix d'achat doit
+être >=5 ; les >=10 sont prioritaires. Cela indique une opportunité historique,
+pas une vente effective, un prix exécutable ou un profit acquis. Les champs
+PnL, ROI et win rate de la requête restent NULL. Les 500 lignes sont un Top 500
+SQL volontaire, et non tout l'univers Arc, même si la pagination du résultat
+complet indique `selection_limited=false`. Aucun minimum de fréquence de trading
+du wallet n'est imposé. Les exclusions d'infrastructure locales s'appliquent
+encore à l'import.
+
+Le 20 septembre 2026, la requête privée `8786588` a été créée puis exécutée :
+500 lignes acceptées, zéro rejet, environ 39 secondes de calcul. Le total du
+compte après les sondes de couverture et cette lecture était de 19,72 crédits
+sur 2 500 inclus (mesure ponctuelle, pas une estimation garantie par exécution).
+
+Profil local initial : cycle toutes les 1 800 s, 25 wallets Zerion par cycle,
+une requête/seconde, rafraîchissement d'un wallet au plus tôt après 21 600 s.
+Le lecteur Dune vérifie les derniers résultats toutes les 21 600 s. Cela vise
+environ 1 248 requêtes Zerion par jour au maximum hors retries et diagnostics
+(48 cycles de 25 wallets + un registre de chaînes), à comparer au quota réel
+du compte. Les premiers wallets encore jamais enrichis passent avant les
+rafraîchissements. Le pacing couvre aussi le registre de chaînes et les retries,
+par client ; ne pas cumuler des diagnostics manuels pendant un cycle.
+Après une erreur temporaire avec report global, la pause du fournisseur est
+le maximum entre le délai du cycle et `Retry-After`, indépendamment du délai
+de rafraîchissement d'un wallet. Les 401/403 gardent une pause longue. Un délai
+déjà persisté avant ce correctif est conservé : il n'est pas raccourci alors
+que le `Retry-After` initial n'a pas été enregistré séparément.
+
+Le worker ne relance toujours pas de SQL automatiquement : utiliser Run dans
+la requête Dune pour produire une nouvelle exécution, puis le lecteur l'importe
+à sa prochaine échéance. Il n'y a aucun achat de plan ou de crédit automatique.
 
 Pour tester les connecteurs séparément, mettre `DUNE_ENABLED=true` et/ou
 `ZERION_ENABLED=true`, mais garder le mode global désactivé :
