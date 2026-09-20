@@ -48,7 +48,8 @@ Une chaîne absente, ambiguë ou un filtre rejeté produit un échec ; aucune
 requête PnL multichaîne de remplacement n'est envoyée.
 
 Authentification HTTP Basic : clé API comme username, password vide.
-Le schéma officiel utilise `data.type = pnl`, avec l'adresse dans `data.id`.
+Le connecteur accepte `data.type = pnl` et `wallet_pnl` (type constaté lors du
+test authentifié Arc), avec l'adresse du wallet vérifiée dans `data.id`.
 Les valeurs sont conservées sans substituer zéro à une absence. Les alias
 `realized_gain_percentage`, `unrealized_gain_percentage`, `received`, `sent`
 correspondent respectivement à `relative_realized_gain_percentage`,

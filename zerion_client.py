@@ -15,7 +15,7 @@ CORE = ('total_gain', 'realized_gain', 'unrealized_gain', 'relative_total_gain_p
 
 def normalize_pnl(data, wallet, chain, now):
     item, links = data.get('data'), data.get('links')
-    if (data.get('errors') or not isinstance(item, dict) or item.get('type') != 'pnl'
+    if (data.get('errors') or not isinstance(item, dict) or item.get('type') not in ('pnl', 'wallet_pnl')
             or wallet_address(item.get('id')) != wallet or not isinstance(item.get('attributes'), dict)
             or not isinstance(links, dict) or links.get('next') is not None):
         raise ExternalError('invalid_pnl_schema')

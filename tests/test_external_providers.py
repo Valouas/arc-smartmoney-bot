@@ -150,8 +150,10 @@ def test_dune_changed_execution_or_late_page_failure_never_returns_partial_resul
     with pytest.raises(ExternalError):DuneDiscovery(cfg,http).fetch(NOW)
 
 
-def test_zerion_resolves_numeric_chain_and_requests_only_arc(cfg):
-    http=Mock();http.get.side_effect=[chains(),pnl()]
+@pytest.mark.parametrize('resource_type', ['pnl', 'wallet_pnl'])
+def test_zerion_resolves_numeric_chain_and_requests_only_arc(cfg,resource_type):
+    payload=pnl();payload['data']['type']=resource_type
+    http=Mock();http.get.side_effect=[chains(),payload]
     data=ZerionClient(cfg,http).pnl(W,NOW)
     assert data['chain']=='arc-mainnet-resolved' and data['data_complete']
     assert http.get.call_args.args[1]=={'currency':'usd','filter[chain_ids]':'arc-mainnet-resolved'}
@@ -181,8 +183,10 @@ def test_zerion_aliases_and_asset_breakdown():
 
 
 @pytest.mark.parametrize('change',['other_chain','wrong_wallet','malformed','nan','scope','excluded'])
-def test_zerion_scope_malformed_and_exclusions(change):
+@pytest.mark.parametrize('resource_type', ['pnl', 'wallet_pnl'])
+def test_zerion_scope_malformed_and_exclusions(change,resource_type):
     data=pnl()
+    data['data']['type']=resource_type
     if change=='other_chain':data['data']['attributes']['breakdown']={'by_implementation':{'ethereum:'+W:{'total_gain':1}}}
     if change=='wrong_wallet':data['data']['id']=W2
     if change=='malformed':data['data']['type']='portfolio'
