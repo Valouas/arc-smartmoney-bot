@@ -116,6 +116,45 @@ def test_same_order_never_filled_twice(ledger):
     assert ledger.db.execute('SELECT COUNT(*) FROM fills').fetchone()[0]==1
 
 
+@pytest.mark.parametrize('liquidity,volume,expected_capacity',[(10000,100000,'10'),(1000000,100,'1')])
+def test_capacity_refusal_keeps_exact_quote_and_limits_without_filling(ledger,liquidity,volume,expected_capacity):
+    client=market()
+    client.token_snapshot.return_value.liquidity_usd=liquidity
+    client.token_snapshot.return_value.volume_m5=volume
+    ex=Execution(ledger,Policy(),client,clock=lambda:NOW)
+    ex.fill(order(ledger),NOW)
+    check=ledger.db.execute('SELECT * FROM execution_checks').fetchone()
+    assert check['outcome']=='INSUFFICIENT_MARKET_CAPACITY' and check['checked_at']==NOW
+    evidence=json.loads(check['evidence'])
+    assert Decimal(evidence['capacity_usdc'])==Decimal(expected_capacity)
+    assert Decimal(evidence['required_usdc'])>Decimal(evidence['capacity_usdc'])
+    assert evidence['quote']['liquidity_usd']==str(liquidity)
+    assert evidence['quote']['volume_m5']==str(volume)
+    assert evidence['liquidity_fraction']=='0.001' and evidence['volume_fraction']=='0.01'
+    assert cash(ledger)==1000 and ledger.db.execute('SELECT COUNT(*) FROM fills').fetchone()[0]==0
+
+
+def test_unavailable_quote_is_distinct_from_capacity_and_survives_later_expiry(ledger):
+    client=market();client.token_snapshot.return_value=None
+    ex=Execution(ledger,Policy(),client,clock=lambda:NOW)
+    obs=order(ledger)
+    assert not ex.fill(obs,NOW)
+    ex.fill(obs,NOW+61)
+    check=ledger.db.execute('SELECT outcome,evidence FROM execution_checks').fetchone()
+    assert check['outcome']=='QUOTE_UNAVAILABLE' and json.loads(check['evidence'])=={'quote':None}
+    assert ledger.db.execute('SELECT reason FROM observations').fetchone()[0]=='STALE_SIGNAL_NO_RETROACTIVE_FILL'
+    assert cash(ledger)==1000
+
+
+def test_successful_fill_keeps_capacity_evidence_beside_fill_quote(ledger):
+    ex=Execution(ledger,Policy(),market(),clock=lambda:NOW)
+    ex.fill(order(ledger),NOW)
+    check=ledger.db.execute('SELECT * FROM execution_checks').fetchone()
+    assert check['outcome']=='CAPACITY_OK'
+    assert json.loads(check['evidence'])['quote']==json.loads(ledger.db.execute('SELECT quote FROM fills').fetchone()[0])
+    assert cash(ledger)==950
+
+
 def test_atomic_fill_rolls_back_cash_and_positions(ledger):
     obs=order(ledger)
     ledger.db.execute("CREATE TRIGGER fail_fill BEFORE INSERT ON fills BEGIN SELECT RAISE(ABORT,'test'); END")

@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 from external_http import ExternalError
-from external_wallet_pipeline import cycle, run
+from external_wallet_pipeline import cycle, run, safe_failure
 from external_wallet_report import combined_report
 from external_wallet_store import ExternalStore
 from historical_snapshots import decoding_context
@@ -69,6 +69,38 @@ def test_existing_wallet_merges_without_overwriting_status_discovery_date_or_his
         assert tuple(store.db.execute('SELECT * FROM discovery_candidates').fetchone())==previous
         assert store.db.execute('SELECT COUNT(*) FROM discovery_candidates').fetchone()[0]==1
     assert len(combined_report(local.path,cfg,NOW))==1
+
+
+def test_bridge_allows_another_writer_between_read_and_insert(local,cfg):
+    # A live SELECT cursor retains a WAL snapshot. Another worker committing
+    # before our first INSERT must not turn the import into SQLITE_BUSY_SNAPSHOT.
+    with closing(ExternalStore(local.path)) as store:
+        client=dune_client(cfg)
+        client.http.get.return_value=dune_page([row(W),row(W2)],total=2)
+        store.dune(client.fetch(NOW),NOW,cfg)
+        connection=store.db
+        class ConcurrentCommit:
+            fired=False
+            def __getattr__(self,name): return getattr(connection,name)
+            def __enter__(self): return self
+            def __exit__(self,*args): return connection.__exit__(*args)
+            def execute(self,sql,params=()):
+                if 'INSERT OR IGNORE INTO discovery_candidates' in sql and not self.fired:
+                    self.fired=True
+                    with local.db:
+                        local.db.execute("INSERT INTO scanner_state VALUES('parallel_test','1')")
+                return connection.execute(sql,params)
+        store.db=ConcurrentCommit()
+        store.bridge(cfg,NOW,set())
+        assert store.db.fired
+        assert {r[0] for r in connection.execute('SELECT wallet FROM discovery_candidates')}=={W,W2}
+        assert connection.execute('SELECT COUNT(*) FROM events').fetchone()[0]==0
+
+
+def test_sqlite_diagnostics_do_not_expose_exception_contents():
+    assert 'category=sqlite_busy' in safe_failure(sqlite3.OperationalError('database is locked'))
+    message=safe_failure(sqlite3.OperationalError('SQL with SECRET https://private/credential'))
+    assert message=='category=sqlite_operational | site=unknown'
 
 
 def test_repeat_execution_idempotent_and_refresh_schedule_persistent(local,cfg):

@@ -66,8 +66,11 @@ class ExternalStore:
     def bridge(self, cfg, now, excluded):
         if not cfg.external_discovery_enabled: return
         # Queue identity only. No winner, trade, profile, score or authority is imported.
+        # Exhaust the SELECT before beginning writes. A live read cursor keeps an
+        # older WAL snapshot that cannot be upgraded after another worker commits.
+        rows = self.db.execute('SELECT wallet,observed_at FROM external_wallet_candidates WHERE data_complete=1 AND chain_id=5042').fetchall()
         with self.db:
-            for row in self.db.execute('SELECT wallet,observed_at FROM external_wallet_candidates WHERE data_complete=1 AND chain_id=5042'):
+            for row in rows:
                 if row['wallet'] in excluded: continue
                 self.db.execute('''INSERT OR IGNORE INTO discovery_candidates
                     (wallet,first_discovered_at,last_discovered_at,status)

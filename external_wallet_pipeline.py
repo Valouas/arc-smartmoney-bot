@@ -1,6 +1,7 @@
 """Optional external observations -> existing local audit -> existing paper policy."""
 import argparse
 import json
+import sqlite3
 import time
 from contextlib import closing
 
@@ -11,6 +12,22 @@ from external_wallet_store import ExternalStore
 from process_lock import ProcessLock
 from wallet_policy import infrastructure_addresses
 from zerion_client import ZerionClient
+
+
+def safe_failure(error):
+    category = type(error).__name__
+    if isinstance(error, sqlite3.OperationalError):
+        # Python 3.10 lacks sqlite_errorname. Match only known static messages;
+        # never print raw exception text, SQL, parameters or provider URLs.
+        category = 'sqlite_busy' if str(error) in ('database is locked','database table is locked') else 'sqlite_operational'
+    site = 'unknown'
+    trace = error.__traceback__
+    while trace:
+        filename = trace.tb_frame.f_code.co_filename.replace('\\','/').rsplit('/',1)[-1]
+        if filename in ('external_wallet_store.py','external_wallet_pipeline.py','zerion_budget.py'):
+            site = filename+':'+str(trace.tb_lineno)
+        trace = trace.tb_next
+    return 'category='+category+' | site='+site
 
 
 def cycle(store, cfg, *, dune_only=False, now=None, dune_factory=DuneDiscovery, zerion_factory=ZerionClient):
@@ -73,7 +90,7 @@ def run(*, once=False, dune_only=False, db_path='data/arc_bot.sqlite3', cfg=SETT
                     print(json.dumps(result),flush=True)
                     code = 1 if result['errors'] else 0
                 except Exception as error:
-                    print('External cycle deferred | category='+type(error).__name__,flush=True)
+                    print('External cycle deferred | '+safe_failure(error),flush=True)
                     code = 1
                 if once: return code
                 time.sleep(min(cfg.external_poll_seconds,cfg.dune_refresh_seconds,cfg.zerion_refresh_seconds))

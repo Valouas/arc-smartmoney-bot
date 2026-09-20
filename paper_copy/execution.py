@@ -34,6 +34,12 @@ class Execution:
             self.db.execute("UPDATE observations SET status='SKIPPED',reason=? WHERE id=? AND status='PENDING'",(reason,order['id']))
         return True
 
+    def record_check(self, order, now, outcome, evidence):
+        # Evidence for this attempt, not a fill or a historical price substitute.
+        with self.db:
+            self.db.execute('INSERT INTO execution_checks(observation_id,checked_at,outcome,evidence) VALUES(?,?,?,?)',
+                (order['id'],now,outcome,json.dumps(evidence,allow_nan=False)))
+
     def fill(self, order, now):
         cfg = self.policy
         if not 0 <= now-order['source_at'] <= cfg.max_signal_age:
@@ -55,11 +61,14 @@ class Execution:
             return self.finish(order,'SELECTION_NOT_AUTHORIZED')
         quote = quote_data(market,order['token'],now)
         if quote is None:
+            self.record_check(order,now,'QUOTE_UNAVAILABLE',{'quote':None})
             with self.db:
                 self.db.execute("UPDATE observations SET attempts=attempts+1,reason='QUOTE_UNAVAILABLE' WHERE id=?",(order['id'],))
             return False
         spot,liquidity,volume = (decimal(quote[k]) for k in ('price_usd','liquidity_usd','volume_m5'))
         capacity = min(liquidity*decimal(cfg.liquidity_fraction),volume*decimal(cfg.volume_fraction))
+        evidence = {'quote':quote,'liquidity_fraction':cfg.liquidity_fraction,
+                    'volume_fraction':cfg.volume_fraction,'capacity_usdc':str(capacity)}
         fee_rate,slippage,gas = decimal(cfg.fee_bps)/10000,decimal(cfg.slippage_bps)/10000,decimal(cfg.gas_usdc)
         cash = decimal(account['cash'])
         if order['side'] == 'BUY':
@@ -67,6 +76,8 @@ class Execution:
             budget = min(decimal(order['budget']),cash)
             if budget < decimal(cfg.min_buy) or budget <= gas: return self.finish(order,'INSUFFICIENT_CASH')
             notional = (budget-gas)/(1+fee_rate)
+            self.record_check(order,now,'INSUFFICIENT_MARKET_CAPACITY' if notional > capacity else 'CAPACITY_OK',
+                              {**evidence,'required_usdc':str(notional),'budget_usdc':str(budget)})
             if notional > capacity: return self.finish(order,'INSUFFICIENT_MARKET_CAPACITY')
             price = spot*(1+slippage+notional/liquidity)
             qty,fee,pnl = notional/price,notional*fee_rate,Decimal(0)
@@ -77,6 +88,8 @@ class Execution:
             fraction = decimal(order['sell_fraction'])
             if not 0 < fraction <= 1: return self.finish(order,'INVALID_SOURCE_SELL_FRACTION')
             qty = decimal(position['quantity'])*fraction
+            self.record_check(order,now,'INSUFFICIENT_MARKET_CAPACITY' if qty*spot > capacity else 'CAPACITY_OK',
+                              {**evidence,'required_usdc':str(qty*spot)})
             # No invented partial exit: inability to simulate the requested sale
             # is retained explicitly; retry only until the signal expires.
             if qty*spot > capacity:

@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS fills(
  observation_id TEXT PRIMARY KEY,wallet TEXT NOT NULL,token TEXT NOT NULL,side TEXT NOT NULL,
  filled_at INTEGER NOT NULL,quantity TEXT NOT NULL,price TEXT NOT NULL,notional TEXT NOT NULL,
  fee TEXT NOT NULL,gas TEXT NOT NULL,realized_pnl TEXT NOT NULL,quote TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS execution_checks(
+ id INTEGER PRIMARY KEY,observation_id TEXT NOT NULL,checked_at INTEGER NOT NULL,
+ outcome TEXT NOT NULL,evidence TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS execution_checks_observation ON execution_checks(observation_id,id);
 CREATE TABLE IF NOT EXISTS gaps(
  id TEXT PRIMARY KEY,block INTEGER NOT NULL,reason TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS scanned_transactions(
