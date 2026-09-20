@@ -30,6 +30,16 @@ def test_roles_match_v4_plus_separate_paper(cfg,history,webhook):
     assert run_all.roles_for(cfg)==[c[-1].removesuffix('.py') for c in commands_for(cfg)]+['paper_copy','dashboard']
 
 
+def test_explicit_research_mode_keeps_discovery_history_and_live_paper(cfg):
+    cfg.research_paper_only=True
+    cfg.alchemy_sync_enabled=True
+    roles=run_all.roles_for(cfg)
+    assert 'bot' not in roles and 'wallet_profiler' not in roles
+    assert {'launch_indexer','auto_discovery','historical_analysis','paper_copy',
+            'alchemy_webhook','alchemy_sync','dashboard'}<=set(roles)
+    assert not {'bot.py','wallet_profiler.py'} & {c[-1] for c in commands_for(cfg)}
+
+
 def test_existing_manual_worker_prevents_any_new_start(local,cfg,monkeypatch):
     monkeypatch.setattr(run_all,'busy',lambda _:True)
     with pytest.raises(RuntimeError,match='ancienne instance'): run_all.preflight(cfg)

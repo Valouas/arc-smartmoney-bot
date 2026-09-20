@@ -8,6 +8,7 @@ import time
 from decoder import hex_value
 from .policy import decimal
 from .scanner import Scanner, ChainConsistencyError
+from rpc_transport import RPCError
 
 
 class LiveStore:
@@ -24,6 +25,36 @@ class LiveStore:
 class LiveScanner(Scanner):
     def __init__(self, store, rpc, policy, cfg):
         super().__init__(LiveStore(store), rpc, policy, cfg)
+
+    def participants(self, first, last, wallets):
+        """Bounded wider transport, with full validation before any checkpoint.
+
+        Only a recognized provider range limit can split a query. Timeout, 429,
+        malformed responses and chain errors still abort the staged window.
+        """
+        provider=self.rpc.w3.provider
+        limits=getattr(provider,'paper_range_limits',None)
+        if not isinstance(limits,dict):
+            limits={}; provider.paper_range_limits=limits
+        configured=self.cfg.paper_log_query_blocks
+        def read(start,end):
+            try: return self._participants_range(start,end,wallets)
+            except RPCError as error:
+                if error.category!='log_range' or end-start+1<=10: raise
+                size=max(10,(end-start+1)//2)
+                key=getattr(provider,'active',0)
+                limits[key]=min(limits.get(key,configured),size)
+                result={}
+                for part in range(start,end+1,size):
+                    result.update(read(part,min(end,part+size-1)))
+                return result
+        result={}; start=first
+        while start<=last:
+            size=min(configured,limits.get(getattr(provider,'active',0),configured))
+            end=min(last,start+size-1)
+            result.update(read(start,end))
+            start=end+1
+        return result
 
     def header(self, number):
         block = self.rpc.get_block(number, False)
@@ -82,7 +113,10 @@ class LiveScanner(Scanner):
         if not wallets or first > safe:
             return 0
         self.stable(first-1,self.store.get('last_hash'))
-        last = min(safe,first+self.policy.block_window-1)
+        # Transport coverage only: frozen cash, fills and execution rules stay
+        # identical, including stale-signal rejection and ordered active blocks.
+        window=max(self.policy.block_window,self.cfg.paper_catchup_window_blocks)
+        last = min(safe,first+window-1)
         anchor_hash = hex_value(self.header(last)['hash'])
         found = self.participants(first,last,wallets)
         # Every subrequest must have succeeded before any checkpoint is advanced.

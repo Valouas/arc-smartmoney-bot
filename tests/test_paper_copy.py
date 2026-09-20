@@ -221,7 +221,7 @@ def fake_rpc():
         return {'number':n,'hash':n.to_bytes(32,'big'),'parentHash':max(0,n-1).to_bytes(32,'big'),'timestamp':NOW}
     eth=SimpleNamespace(get_logs=Mock(return_value=[]),get_transaction=Mock(),contract=Mock())
     return SimpleNamespace(block_number=Mock(return_value=5),get_block=Mock(side_effect=header),
-                           get_receipt=Mock(),w3=SimpleNamespace(eth=eth))
+                           get_receipt=Mock(),w3=SimpleNamespace(eth=eth,provider=SimpleNamespace(active=0)))
 
 
 def checkpoint(store,number=1):

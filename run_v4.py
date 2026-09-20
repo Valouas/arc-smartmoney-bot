@@ -9,7 +9,8 @@ COMMANDS=[
 ]
 
 def commands_for(cfg):
-    return (COMMANDS + ([[sys.executable,'historical_analysis.py']] if cfg.historical_analysis_enabled else [])
+    commands=[c for c in COMMANDS if c[-1] not in ('bot.py','wallet_profiler.py')] if getattr(cfg,'research_paper_only',False) else COMMANDS
+    return (commands + ([[sys.executable,'historical_analysis.py']] if cfg.historical_analysis_enabled else [])
             + ([[sys.executable,'alchemy_webhook.py']] if cfg.alchemy_webhook_enabled else []))
 
 

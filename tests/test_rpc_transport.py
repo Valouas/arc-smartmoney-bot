@@ -127,6 +127,25 @@ def test_invalid_envelope_never_retried_or_empty(envelope, caplog):
     assert 'credential' not in caplog.text
 
 
+@pytest.mark.parametrize('method,code,message,category',[
+    ('eth_getLogs',-32602,'Maximum block range is 10','log_range'),
+    ('eth_getLogs',-32005,'Too many results','log_range'),
+    ('eth_getLogs',-32000,'Response size exceeded','log_range'),
+    ('eth_getLogs',-32000,'credential private failure','json_rpc'),
+    ('eth_getLogs',-32099,'block range','json_rpc'),
+    ('eth_blockNumber',-32602,'block range','json_rpc'),
+])
+def test_only_recognized_log_range_errors_allow_smaller_queries(method,code,message,category,caplog):
+    p,http,clock=provider([])
+    p.verified.add(0)
+    http.post=Mock(return_value=Mock(status_code=200,headers={},json=lambda:{
+        'jsonrpc':'2.0','id':0,'error':{'code':code,'message':message}}))
+    with pytest.raises(RPCError) as failure: p.make_request(method,[])
+    assert failure.value.category==category
+    assert http.post.call_count==1 and not clock.waits
+    assert 'credential' not in caplog.text
+
+
 def test_failover_requires_exhaustion_and_validates_chain():
     p, http, clock = provider([502, 502, 502, [], []], fallback_urls=['https://secondary.test'])
     assert Web3(p).eth.get_logs({}) == []

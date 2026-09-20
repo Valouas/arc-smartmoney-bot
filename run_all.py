@@ -76,6 +76,8 @@ class StatePublisher:
 
 def roles_for(cfg):
     roles=list(ROLES[:4])
+    if getattr(cfg,'research_paper_only',False):
+        roles=['launch_indexer','auto_discovery']
     if cfg.historical_analysis_enabled: roles.append('historical_analysis')
     if cfg.alchemy_webhook_enabled: roles.append('alchemy_webhook')
     if cfg.alchemy_webhook_enabled and getattr(cfg,'alchemy_sync_enabled',False): roles.append('alchemy_sync')
@@ -267,6 +269,8 @@ def supervise(cfg):
         record_event('startup_backup_verified' if generation else 'startup_backup_no_existing_database')
         if generation: print('Sauvegarde SQLite verifiee avant demarrage.',flush=True)
     prepare(cfg)
+    if getattr(cfg,'research_paper_only',False):
+        print('Mode RECHERCHE + PAPER : scanner V4 et profiler forward suspendus ; checkpoints conserves.',flush=True)
     children={}; url=None; warned=set(); publisher=StatePublisher(); recovery=HistoricalRecovery()
     reason='startup_failure'; operation='launch_child'
     try:

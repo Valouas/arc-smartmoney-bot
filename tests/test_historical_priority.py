@@ -111,6 +111,9 @@ def test_infrastructure_excluded_contract_account_stays_eligible(store, cfg, mon
     ({'outside_snapshot': True}, False),
 ])
 def test_inactive_refresh_deferral_is_bounded_and_unknown_stays_due(store, cfg, monkeypatch, payload, delayed):
+    # Isolate timestamp scheduling: these deliberately partial payloads are not
+    # trade/report fixtures, and this wallet has no paper priority.
+    monkeypatch.setattr('historical_priority.build_report', lambda *args: [])
     c, _ = completed(store, cfg)
     # Fixture NOW must be > inactivity window for the old timestamp.
     c.cfg = replace(c.cfg, historical_inactive_days=1, historical_inactive_refresh_seconds=86400,
@@ -165,3 +168,26 @@ def test_equal_step_budget_finishes_priority_wallet_sooner(tmp_path, cfg, monkey
             counts.append(store.db.execute("SELECT count(*) FROM historical_runs WHERE phase='COMPLETE'").fetchone()[0])
         finally: store.db.close()
     assert counts[0] == 0 and counts[1] >= 1
+
+
+def test_expired_paper_only_blocker_prioritized_but_fair_slots_remain(store,cfg,monkeypatch):
+    candidate(store,W2,sources=99,rank=1)
+    monkeypatch.setattr('historical_priority.build_report',lambda *a:[
+        {'wallet':W,'paper_review_blockers':['retained_selection_expired']},
+        {'wallet':W2,'paper_review_blockers':['insufficient_regularity']}])
+    c,scheduler=setup(store,cfg,monkeypatch,budget=4)
+    c.step=Mock()
+    scheduler.cycle()
+    assert [call.args[0] for call in c.step.call_args_list]==[W,W,W,W2]
+    assert store.db.execute("SELECT COUNT(*) FROM discovery_candidates WHERE status='QUARANTINE'").fetchone()[0]==2
+
+
+def test_paper_attention_never_bypasses_transport_cooldown(store,cfg,monkeypatch):
+    monkeypatch.setattr('historical_priority.build_report',lambda *a:[
+        {'wallet':W,'paper_review_blockers':['historical_snapshot_stale']}])
+    c,scheduler=setup(store,cfg,monkeypatch,budget=1)
+    scheduler.candidates(NOW)
+    with store.db: store.db.execute('UPDATE historical_priority_wallets SET retry_at=?',(NOW+300,))
+    c.step=Mock()
+    scheduler.cycle()
+    c.step.assert_not_called()

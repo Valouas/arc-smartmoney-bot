@@ -374,6 +374,12 @@ class ResilientRPCProvider(JSONBaseProvider):
                             or ('result' in data) == ('error' in data)):
                         raise self._error(method, 'invalid_response', attempt, index)
                     if 'error' in data:
+                        if (method == 'eth_getLogs' and isinstance(data['error'],dict)
+                                and data['error'].get('code') in (-32602,-32005,-32000)
+                                and isinstance(data['error'].get('message'),str)
+                                and any(marker in data['error']['message'].lower() for marker in
+                                        ('block range','too many results','response size exceeded','query returned more than'))):
+                            raise self._error(method,'log_range',attempt,index)
                         # Contract reverts are semantic failures, not transport
                         # outages. Preserve Web3's optional metadata behavior,
                         # without forwarding untrusted error text/data to logs.

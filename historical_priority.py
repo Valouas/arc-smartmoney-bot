@@ -7,6 +7,7 @@ from historical_store import VERSION
 from rpc_transport import RPCError
 from wallet_policy import is_dex_infrastructure
 from discovery_sources import observed_sources
+from historical_report import build_report
 
 
 SCHEMA = '''
@@ -67,6 +68,15 @@ class PriorityCollector:
         return base
 
     def candidates(self, now):
+        attention={}
+        # This affects work order only. The report/consumer still applies every
+        # admission rule; no expired evidence receives trading authority.
+        for report in build_report(self.collector.storage.path,self.cfg,now):
+            blockers=set(report.get('paper_review_blockers') or [])
+            if blockers and blockers <= {'retained_selection_expired','historical_snapshot_stale'}:
+                attention[report['wallet']]=2
+            elif report.get('paper_review_eligible'):
+                attention[report['wallet']]=1
         sources = observed_sources(self.db, self.cfg)
         tiers = {}
         for wallet, token in self.db.execute('SELECT wallet,token FROM candidate_sources'):
@@ -80,12 +90,13 @@ class PriorityCollector:
         for source in rows:
             row = dict(source)
             row['source_tier'] = tiers.get(row['wallet'], 0)
+            row['paper_attention'] = attention.get(row['wallet'],0)
             if is_dex_infrastructure(row['wallet'], self.cfg): continue
             with self.db:
                 self.db.execute('INSERT OR IGNORE INTO historical_priority_wallets(wallet) VALUES(?)', (row['wallet'],))
             for field in ('rounds', 'served', 'retry_at'): row[field] = row[field] or 0
             if row['retry_at'] > now: continue
-            interval = self.refresh_interval(row)
+            interval = self.cfg.historical_refresh_seconds if row['paper_attention'] else self.refresh_interval(row)
             if (row['phase'] == 'COMPLETE' and row['version'] == VERSION
                     and row['completed_at'] is not None and now-row['completed_at'] < interval):
                 if now-row['completed_at'] >= self.cfg.historical_refresh_seconds: deferred += 1
@@ -107,7 +118,7 @@ class PriorityCollector:
                 if state['focus'] not in due or state['remaining'] <= 0:
                     # Discovery strength is a queue preference, never proof of
                     # realized profit or independent identities.
-                    row = min(due.values(), key=lambda r:(r['rounds'], -r['source_tier'],
+                    row = min(due.values(), key=lambda r:(-r['paper_attention'],r['rounds'], -r['source_tier'],
                         -r['source_winners'], r['best_early_rank'] or 10**9,
                         r['phase'] == 'COMPLETE', r['served'], r['first_discovered_at'], r['wallet']))
                     state['focus'], state['remaining'] = row['wallet'], self.cfg.historical_focus_steps

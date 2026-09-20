@@ -120,6 +120,9 @@ class Settings:
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
     paper_live_enabled: bool = os.getenv('PAPER_LIVE_ENABLED', 'false').lower() == 'true'
+    research_paper_only: bool = os.getenv('RESEARCH_PAPER_ONLY', 'false').lower() == 'true'
+    paper_log_query_blocks: int = _i('PAPER_LOG_QUERY_BLOCKS', 10)
+    paper_catchup_window_blocks: int = _i('PAPER_CATCHUP_WINDOW_BLOCKS', 40)
     alchemy_webhook_enabled: bool = os.getenv('ALCHEMY_WEBHOOK_ENABLED', 'false').lower() == 'true'
     alchemy_webhook_host: str = os.getenv('ALCHEMY_WEBHOOK_HOST', '127.0.0.1')
     alchemy_webhook_port: int = _i('ALCHEMY_WEBHOOK_PORT', 8000)
@@ -131,6 +134,10 @@ class Settings:
     alchemy_sync_seconds: int = _i('ALCHEMY_SYNC_SECONDS',300)
 
     def __post_init__(self):
+        if not 10 <= self.paper_log_query_blocks <= 1000 or not 40 <= self.paper_catchup_window_blocks <= 2000:
+            raise ValueError('Invalid paper transport windows')
+        if self.research_paper_only and not (self.historical_analysis_enabled and self.paper_live_enabled):
+            raise ValueError('Research/paper mode requires historical analysis and live paper')
         if (not math.isfinite(self.discovery_min_multiple) or self.discovery_min_multiple < 1
                 or not math.isfinite(self.discovery_priority_multiple)
                 or self.discovery_priority_multiple < self.discovery_min_multiple
