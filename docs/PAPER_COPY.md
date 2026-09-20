@@ -36,17 +36,23 @@ Le code commun de transport RPC et de preuve trusted DEX reste reutilise.
 ## Selection et retrait
 
 Source par defaut : `data/paper_review_selection.json`, produit par l'analyseur
-et le ranking historique. Schema 2, `admission_policy=paper_review_v1`, classe
+et le ranking historique. Schema 2, `admission_policy=paper_review_v2`, classe
 de simulation `PAPER_REVIEW` : cette admission ne change pas le statut historique
 WATCH/PROMISING et ne signifie pas HISTORICALLY_QUALIFIED.
 
-Tous les seuils de performance precedents sont conserves, depuis la meme fonction
-de regles : 8 achats, 5 positions fermees, 2 tokens profitables, 2 periodes de 6 h
-profitables, fermetures etalees sur au moins 6 h, PnL prudent positif et contribution
-maximale d'une position de 80 % (valeurs par defaut de la configuration existante).
-Le consommateur les recalcule au chargement ; un flag eligible seul ne suffit pas.
+La qualification historique stricte conserve tous ses seuils. Pour l'essai paper,
+deux motifs deviennent des avertissements : `profit_concentrated_in_one_position`
+et `regularity_not_established`. Un gros pari concentre ou une seule periode
+beneficiaire ne bloque donc plus, a lui seul, l'observation paper d'un wallet.
+Cela ne le valide pas et n'ajoute aucune autorite au moteur de signaux.
 
-Seulement ces cinq motifs deviennent des avertissements pour la selection paper :
+Les autres conditions restent identiques : 8 achats, 5 positions fermees,
+2 tokens profitables, fermetures etalees sur au moins 6 h et PnL prudent positif
+(valeurs par defaut). Le consommateur recalcule les regles et les avertissements ;
+un flag eligible seul ou des avertissements caches ne suffisent pas. Le changement
+de version d'admission exige un nouvel export, pas une reinitialisation des comptes.
+
+Les cinq avertissements historiques deja autorises sont conserves :
 
 - `external_or_unexplained_token_movement` ;
 - `gas_cost_unknown` ;

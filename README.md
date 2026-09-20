@@ -22,8 +22,9 @@ See [historical selection and consumer contract](docs/HISTORICAL_SELECTION.md).
 Use `python wallet_ranking.py --historical --top 20` for this ranking.
 
 **Separate live paper-copy bot:** `python -m paper_copy` consumes the separate
-`paper_review_selection.json` export: unchanged performance thresholds, with
-explicit historical-data warnings allowed for paper experiments only. Strict
+`paper_review_selection.json` export: concentration and insufficient regularity
+are explicit warnings for exploratory paper, alongside existing historical-data
+warnings. All other admission requirements still apply. Strict
 `historical_selection.json` qualification remains available and unchanged.
 Each wallet has an independent virtual 1,000 USDC account.
 It sizes buys between 10 and 100 USDC relative to prior median buys and copies

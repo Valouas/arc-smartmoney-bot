@@ -1,9 +1,9 @@
-"""Narrow paper-only admission. Performance thresholds are reused unchanged."""
+"""Exploratory paper admission; strict historical qualification is unchanged."""
 import math
 from historical_metrics import performance_reasons
 
 ZERO_ADDRESS='0x'+'0'*40
-POLICY='paper_review_v1'
+POLICY='paper_review_v2'
 DEFAULT_SELECTION='data/paper_review_selection.json'
 HISTORICAL_WARNINGS=frozenset({
     'external_or_unexplained_token_movement',
@@ -12,6 +12,10 @@ HISTORICAL_WARNINGS=frozenset({
     'insufficient_independent_profitable_tokens',
     'profitable_deployer_identity_unknown',
 })
+PERFORMANCE_WARNINGS=frozenset({
+    'profit_concentrated_in_one_position',
+    'regularity_not_established',
+})
 
 
 def assess(row,cfg,now):
@@ -19,8 +23,8 @@ def assess(row,cfg,now):
     if not isinstance(row['blocking_reasons'],list) or any(not isinstance(x,str) for x in row['blocking_reasons']):
         raise ValueError('Malformed historical blockers')
     reasons=set(row['blocking_reasons'])
-    warnings=reasons & HISTORICAL_WARNINGS
-    blockers=reasons-HISTORICAL_WARNINGS
+    warnings=reasons & (HISTORICAL_WARNINGS | PERFORMANCE_WARNINGS)
+    blockers=reasons-(HISTORICAL_WARNINGS | PERFORMANCE_WARNINGS)
     null_identity=(row.get('null_funder_identity_unknown') is True or row.get('funder')==ZERO_ADDRESS)
     if null_identity and not row.get('shared_service'):
         # Correcting the old zero-address bug makes identity unknown, not known
@@ -39,8 +43,8 @@ def assess(row,cfg,now):
     if row.get('collection_error'): blockers.add('historical_collection_error')
     if type(row.get('snapshot_at')) is not int or not 0<=now-row['snapshot_at']<=cfg.historical_max_age_hours*3600:
         blockers.add('historical_snapshot_stale')
-    # Recalculate the SAME performance rules at the consumer, rather than
-    # trusting an export's eligible flag or a conveniently empty reasons list.
+    # Recalculate all strict performance rules at the consumer. Only the two
+    # explicit exploratory exceptions become warnings, never extra authority.
     try:
         for key in ('buys','closed_positions','profitable_periods','closed_evidence_span_seconds'):
             if type(row[key]) is not int or row[key]<0: raise ValueError()
@@ -52,7 +56,9 @@ def assess(row,cfg,now):
         metrics=dict(row)
         metrics['profitable_tokens']=set(row['profitable_tokens'])
         metrics['concentration_risk']='HIGH' if row['largest_position_contribution']>cfg.historical_max_concentration else 'LOW'
-        blockers.update(performance_reasons(metrics,cfg))
+        performance=set(performance_reasons(metrics,cfg))
+        warnings.update(performance & PERFORMANCE_WARNINGS)
+        blockers.update(performance-PERFORMANCE_WARNINGS)
         if not isinstance(row['issues'],list) or any(not isinstance(x,str) for x in row['issues']): raise ValueError()
         if set(row['issues'])-HISTORICAL_WARNINGS:
             blockers.update(set(row['issues'])-HISTORICAL_WARNINGS)

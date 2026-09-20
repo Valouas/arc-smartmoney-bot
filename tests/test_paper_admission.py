@@ -73,10 +73,8 @@ def test_four_observed_profiles_pass_without_lowering_performance_thresholds(cfg
 @pytest.mark.parametrize('change,reason',[
     ({'buys':7},'insufficient_buys'),({'closed_positions':4},'insufficient_closed_positions'),
     ({'profitable_tokens':[T]},'insufficient_profitable_tokens'),
-    ({'profitable_periods':1},'regularity_not_established'),
     ({'closed_evidence_span_seconds':21599},'evidence_period_too_short'),
     ({'conservative_pnl_usdc':0},'conservative_profit_not_positive'),
-    ({'largest_position_contribution':.81},'profit_concentrated_in_one_position'),
     ({'open_inventory_risk':'OPEN_COST_NOT_COVERED'},'open_inventory_not_covered_by_realized_profit'),
     ({'snapshot_phase':'DECODING'},'historical_snapshot_incomplete'),
     ({'snapshot_at':NOW-49*3600},'historical_snapshot_stale'),
@@ -89,6 +87,62 @@ def test_every_other_blocker_still_applies_and_consumer_rechecks(cfg,tmp_path,ch
     row=review_row(cfg); row.update(change)
     assert reason in assess(row,cfg,NOW)[1]
     # Keep the stale eligible=True export flag: consumer must not trust it.
+    with pytest.raises(SelectionError): load(tmp_path,cfg,[row])
+
+
+@pytest.mark.parametrize('changes,expected',[
+    ({'profitable_periods':1},{'regularity_not_established'}),
+    ({'largest_position_contribution':.9876},{'profit_concentrated_in_one_position'}),
+    ({'profitable_periods':1,'largest_position_contribution':.9876},
+     {'regularity_not_established','profit_concentrated_in_one_position'}),
+])
+def test_rare_concentrated_wallet_can_enter_exploratory_paper_only(cfg,tmp_path,changes,expected):
+    row=review_row(cfg);row.update(changes)
+    row['blocking_reasons']+=sorted(expected)
+    annotate(row,cfg)
+    assert not row['paper_review_blockers']
+    assert expected <= set(row['paper_review_warnings'])
+    selected=load(tmp_path,cfg,[row])[W]
+    assert selected['admission']=='PAPER_REVIEW'
+    assert selected['historical_class']=='WATCH'
+    assert not row['live_signal_authority'] and not row['paper_selection_eligible']
+    # Strict qualification still sees both performance failures.
+    metrics={**row,'concentration_risk':'HIGH' if row['largest_position_contribution']>cfg.historical_max_concentration else 'LOW'}
+    category,reasons=qualify(metrics,{'phase':'COMPLETE','version':1,'cutoff_at':NOW},
+                            {'eligible':True,'independent_profitable_deployers':10},False,cfg,NOW)
+    assert category!='HISTORICALLY_QUALIFIED' and expected<=set(reasons)
+
+
+def test_consumer_recomputes_exploratory_warnings_even_when_export_hides_them(cfg,tmp_path):
+    row=review_row(cfg)
+    row.update(profitable_periods=1,largest_position_contribution=.99)
+    with pytest.raises(SelectionError): load(tmp_path,cfg,[row])
+    annotate(row,cfg)
+    assert W in load(tmp_path,cfg,[row])
+    row['paper_review_warnings'].remove('regularity_not_established')
+    with pytest.raises(SelectionError): load(tmp_path,cfg,[row])
+
+
+def test_exploratory_policy_version_is_explicit(cfg,tmp_path):
+    payload=document([review_row(cfg)])
+    assert payload['admission_policy']=='paper_review_v2'
+    payload['admission_policy']='paper_review_v1'
+    path=tmp_path/'old.json';path.write_text(json.dumps(payload))
+    with pytest.raises(SelectionError): load_selection(path,cfg,NOW)
+
+
+@pytest.mark.parametrize('change,reason',[
+    ({'snapshot_at':NOW-49*3600},'historical_snapshot_stale'),
+    ({'transactions_pending':1},'historical_snapshot_incomplete'),
+    ({'shared_service':True},'shared_service_excluded'),
+    ({'infrastructure_excluded':True},'dex_infrastructure_excluded'),
+    ({'conservative_pnl_usdc':-1},'conservative_profit_not_positive'),
+    ({'issues':['sell_without_complete_cost_basis']},'sell_without_complete_cost_basis'),
+])
+def test_exploratory_exceptions_never_override_other_blockers(cfg,tmp_path,change,reason):
+    row=review_row(cfg);row.update(profitable_periods=1,largest_position_contribution=.99)
+    row.update(change);annotate(row,cfg)
+    assert reason in row['paper_review_blockers']
     with pytest.raises(SelectionError): load(tmp_path,cfg,[row])
 
 
