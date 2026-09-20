@@ -5,6 +5,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 SCHEMA = '''
+CREATE TABLE IF NOT EXISTS live_empty_ranges(
+ first_block INTEGER PRIMARY KEY,last_block INTEGER NOT NULL,end_hash TEXT NOT NULL,checked_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS wallets(
  wallet TEXT PRIMARY KEY, cash TEXT NOT NULL, started_block INTEGER NOT NULL,buy_after_block INTEGER NOT NULL,

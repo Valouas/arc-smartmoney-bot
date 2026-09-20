@@ -109,6 +109,7 @@ class Settings:
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
     log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
+    paper_live_enabled: bool = os.getenv('PAPER_LIVE_ENABLED', 'false').lower() == 'true'
     alchemy_webhook_enabled: bool = os.getenv('ALCHEMY_WEBHOOK_ENABLED', 'false').lower() == 'true'
     alchemy_webhook_host: str = os.getenv('ALCHEMY_WEBHOOK_HOST', '127.0.0.1')
     alchemy_webhook_port: int = _i('ALCHEMY_WEBHOOK_PORT', 8000)

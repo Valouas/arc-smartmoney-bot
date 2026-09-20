@@ -139,3 +139,47 @@ def test_weighted_budget_is_optional(tmp_path, monkeypatch):
         assert rpc.w3.provider.limiter.interval == 0.5
     finally:
         rpc.w3.provider.session.close()
+
+
+def test_live_priority_still_obeys_both_budgets_and_cooldown(tmp_path):
+    clock = VirtualClock()
+    history = limiter(tmp_path,clock,60)
+    live = limiter(tmp_path,clock,60)
+    live.priority = True
+    history.acquire('eth_getLogs')
+    live.acquire('eth_getLogs')
+    assert clock.now >= 101  # Priority is not a budget bypass.
+    live.defer(5)
+    live.acquire('eth_blockNumber')
+    assert clock.now >= 106
+    with sqlite3.connect(live.path) as db:
+        assert db.execute('SELECT COUNT(*) FROM rpc_live_waiter').fetchone()[0] == 0
+
+
+def test_dead_live_waiter_expires_and_history_recovers(tmp_path):
+    clock = VirtualClock()
+    history = limiter(tmp_path,clock)
+    with sqlite3.connect(history.path) as db:
+        db.execute('INSERT INTO rpc_live_waiter VALUES(1,?)',(clock.now+2,))
+    history.acquire('eth_blockNumber')
+    assert 102 <= clock.now < 102.1
+
+
+def test_history_yields_to_waiting_live_without_holding_database_lock(tmp_path):
+    clock = VirtualClock()
+    history = limiter(tmp_path,clock,60)
+    live = limiter(tmp_path,clock,60)
+    live.priority = True
+    with sqlite3.connect(history.path) as db:
+        db.execute('INSERT INTO rpc_live_waiter VALUES(1,?)',(clock.now+2,))
+    calls = []
+    def sleep(seconds):
+        clock.sleep(seconds)
+        if not calls:
+            live.acquire('eth_getLogs')
+            calls.append(('live',clock.now))
+    history.sleep = sleep
+    history.acquire('eth_blockNumber')
+    calls.append(('history',clock.now))
+    assert calls[0][0] == 'live'
+    assert calls[1][1] - calls[0][1] >= 1  # Global CU ledger includes live cost.

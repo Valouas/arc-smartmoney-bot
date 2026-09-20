@@ -111,9 +111,11 @@ class SharedComputeLimiter(SharedRateLimiter):
             raise ValueError('RPC compute units per second must be finite and at least 60')
         super().__init__(path, requests_per_second, **kwargs)
         self.compute_units_per_second = compute_units_per_second
+        self.priority = False
         with closing(self._connect()) as db:
             db.execute('CREATE TABLE IF NOT EXISTS cu_usage (at REAL NOT NULL, cost INTEGER NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS rpc_usage_totals (method TEXT PRIMARY KEY, requests INTEGER NOT NULL, throughput_cu INTEGER NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS rpc_live_waiter (id INTEGER PRIMARY KEY CHECK(id=1), expires_at REAL NOT NULL)')
             db.commit()
 
     def acquire(self, method):
@@ -123,13 +125,25 @@ class SharedComputeLimiter(SharedRateLimiter):
             try:
                 db.execute('BEGIN IMMEDIATE')
                 now = self.clock()
+                # A live reader waiting for a costly eth_getLogs must not starve
+                # behind continuous cheap historical reads. This lease changes
+                # ordering only: both global budgets/cooldowns still apply. A
+                # crashed waiter releases priority automatically after 2 seconds.
+                if self.priority:
+                    db.execute('INSERT OR REPLACE INTO rpc_live_waiter VALUES(1,?)',(now+2,))
                 db.execute('DELETE FROM cu_usage WHERE at <= ?', (now - 1,))
                 used, oldest = db.execute('SELECT COALESCE(SUM(cost),0), MIN(at) FROM cu_usage').fetchone()
                 row = db.execute('SELECT next_at FROM budget WHERE id=1').fetchone()
                 wait = max(0, (row[0] if row else now) - now)
+                if not self.priority:
+                    live = db.execute('SELECT expires_at FROM rpc_live_waiter WHERE id=1').fetchone()
+                    if live and live[0] > now:
+                        wait = max(wait,min(.1,live[0]-now))
                 if used + cost > self.compute_units_per_second:
                     wait = max(wait, oldest + 1 - now, 0.000001)
                 if wait <= 0:
+                    if self.priority:
+                        db.execute('DELETE FROM rpc_live_waiter WHERE id=1')
                     db.execute('INSERT OR REPLACE INTO budget VALUES(1,?)', (now + self.interval,))
                     db.execute('INSERT INTO cu_usage VALUES(?,?)', (now, cost))
                     db.execute('''INSERT INTO rpc_usage_totals VALUES(?,1,?)

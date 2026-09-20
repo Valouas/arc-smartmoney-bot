@@ -8,10 +8,12 @@ from config import SETTINGS
 from market_data import DexScreenerClient
 from process_lock import ProcessLock
 from rpc import ArcRPC
+from rpc_transport import SharedComputeLimiter
 from .execution import Execution
 from .policy import Policy, decimal
 from .report import report
 from .scanner import Scanner, ChainConsistencyError
+from .live import LiveScanner
 from .selection import load_selection, SelectionError
 from .store import Store
 from .webhook import LiveWakeup
@@ -39,7 +41,10 @@ def main(argv=None):
             if store.get('halt_reason'):
                 print('PAPER COPY HALTED | prior chain inconsistency requires review')
                 return 2
-            wakeup=LiveWakeup(store,args.webhook_db,policy) if SETTINGS.alchemy_webhook_enabled and not args.no_webhook else None
+            # Once activated, never silently return to the archived cursor.
+            live = SETTINGS.paper_live_enabled or store.get('live_next_block') is not None
+            wakeup=LiveWakeup(store,args.webhook_db,policy,fallback_seconds=2 if live else 15) if SETTINGS.alchemy_webhook_enabled and not args.no_webhook else None
+            if live: print('PAPER COPY | independent LIVE cursor | historical checkpoint retained',flush=True)
             if wakeup: print('PAPER COPY | webhook triggers enabled | ordered RPC verification + periodic fallback',flush=True)
             while True:
                 now = int(time.time())
@@ -64,13 +69,15 @@ def main(argv=None):
                     needs_rpc = bool(selected) or any(decimal(r[0]) > 0 for r in store.db.execute('SELECT quantity FROM positions'))
                     if rpc is None and needs_rpc:
                         rpc = ArcRPC(SETTINGS.rpc_url,5042)
+                        if live and isinstance(rpc.w3.provider.limiter,SharedComputeLimiter):
+                            rpc.w3.provider.limiter.priority = True
                         try: rpc.sanity_check()
                         except Exception:
                             rpc.w3.provider.session.close(); rpc = None
                             raise
                         market = DexScreenerClient(SETTINGS.dexscreener_chain_id)
                     if rpc is not None and needs_rpc:
-                        scanner = Scanner(store,rpc,policy,SETTINGS)
+                        scanner = (LiveScanner if live else Scanner)(store,rpc,policy,SETTINGS)
                         execution = Execution(store,policy,market)
                         due=(wakeup.due(selected,set(selected)|set(scanner.watched()),now) if wakeup else True)
                         blocks=0
@@ -81,7 +88,7 @@ def main(argv=None):
                                 wakeup.scanned(selected,blocks,int(time.time()))
                         execution.pending(int(time.time()))
                         if due or args.once:
-                            print('PAPER COPY | blocks='+str(blocks)+' | next='+str(store.get('next_block')),flush=True)
+                            print('PAPER COPY | blocks='+str(blocks)+' | next='+str(scanner.store.get('next_block')),flush=True)
                     else:
                         if wakeup: wakeup.refresh(set(),now)
                         Execution(store,policy,None).pending(now)

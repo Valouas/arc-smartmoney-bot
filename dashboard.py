@@ -85,7 +85,14 @@ def paper_snapshot(path):
         rows.sort(key=lambda r: (-r['realized_pnl'], r['wallet']))
         recent = [dict(r) for r in db.execute('''SELECT wallet,token,side,filled_at,notional,fee,gas,realized_pnl
             FROM fills ORDER BY filled_at DESC,observation_id DESC LIMIT 40''')]
-        progress = {r[0]: r[1] for r in db.execute("SELECT key,value FROM state WHERE key IN ('next_block','webhook_source_available')")}
+        progress = {r[0]: r[1] for r in db.execute("""SELECT key,value FROM state WHERE key IN
+            ('next_block','webhook_source_available','live_next_block','live_head','live_checked_at',
+             'live_start_block','live_uncovered_from','live_uncovered_to')""")}
+        if 'live_next_block' in progress:
+            progress['historical_next_block'] = progress.get('next_block')
+            progress['next_block'] = progress['live_next_block']
+            if 'live_head' in progress:
+                progress['live_lag_blocks'] = max(0,int(progress['live_head'])-int(progress['live_next_block'])+1)
         observations = {r[0]: r[1] for r in db.execute('SELECT status,COUNT(*) FROM observations GROUP BY status')}
         gaps = db.execute('SELECT COUNT(*) FROM gaps').fetchone()[0]
         running = Decimal(0)
