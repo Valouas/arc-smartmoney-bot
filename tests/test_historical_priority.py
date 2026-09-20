@@ -191,3 +191,54 @@ def test_paper_attention_never_bypasses_transport_cooldown(store,cfg,monkeypatch
     c.step=Mock()
     scheduler.cycle()
     c.step.assert_not_called()
+
+
+def decoding_dossiers(store,cfg,monkeypatch,budget=1):
+    candidate(store,W2,sources=99,rank=1)
+    c,scheduler=setup(store,cfg,monkeypatch,budget=budget)
+    c.cfg=replace(c.cfg,historical_transactions_per_step=10,historical_rpc_workers=1)
+    scheduler.cfg=c.cfg
+    for wallet,count in ((W,7),(W2,40)):
+        c.arc.address_activity.return_value=page(['0x'+f'{i:064x}' for i in range(1,count+1)])
+        c.step(wallet,NOW-1)
+    c.transaction=Mock(side_effect=lambda w,h,r:trade(int(h,16),'BUY',10))
+    c.identity=Mock(return_value={})
+    monkeypatch.setattr('historical_priority.build_report',lambda *a:[
+        {'wallet':w,'paper_review_blockers':['retained_selection_expired']} for w in (W,W2)])
+    scheduler.candidates(NOW)
+    with store.db:
+        store.db.execute('UPDATE historical_priority_wallets SET rounds=99 WHERE wallet=?',(W,))
+    return c,scheduler
+
+
+def test_finish_near_complete_paper_dossier_before_starting_another_round(store,cfg,monkeypatch):
+    c,scheduler=decoding_dossiers(store,cfg,monkeypatch)
+    scheduler.cycle()
+    assert store.db.execute('SELECT phase FROM historical_runs WHERE wallet=?',(W,)).fetchone()[0]=='COMPLETE'
+    assert store.db.execute('SELECT COUNT(payload) FROM historical_transactions WHERE wallet=?',(W2,)).fetchone()[0]==0
+    assert c.transaction.call_count==7
+    assert store.db.execute('SELECT COUNT(*) FROM promoted_wallets').fetchone()[0]==0
+    assert store.db.execute('SELECT COUNT(*) FROM scanner_state').fetchone()[0]==0
+
+
+def test_fetching_partial_count_is_not_treated_as_a_small_complete_dossier(store,cfg,monkeypatch):
+    c,scheduler=decoding_dossiers(store,cfg,monkeypatch)
+    with store.db:
+        store.db.execute("UPDATE historical_runs SET phase='FETCHING' WHERE wallet=?",(W,))
+    c.step=Mock()
+    scheduler.cycle()
+    c.step.assert_called_once_with(W2,NOW)
+
+
+def test_near_complete_failure_keeps_evidence_and_allows_other_wallets(store,cfg,monkeypatch):
+    c,scheduler=decoding_dossiers(store,cfg,monkeypatch,budget=2)
+    original=c.step
+    def step(wallet,now):
+        if wallet==W: raise ArcscanError('timeout')
+        return original(wallet,now)
+    c.step=Mock(side_effect=step)
+    result=scheduler.cycle()
+    assert result['incomplete_steps']==1 and result['wallet_steps']==1
+    assert [call.args[0] for call in c.step.call_args_list]==[W,W2]
+    assert store.db.execute('SELECT COUNT(*) FROM historical_transactions WHERE wallet=?',(W,)).fetchone()[0]==7
+    assert W not in scheduler.candidates(NOW)[0]

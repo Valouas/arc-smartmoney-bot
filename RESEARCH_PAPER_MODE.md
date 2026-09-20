@@ -38,6 +38,12 @@ quatre reste réservé au wallet servi le moins récemment. Le délai après err
 transport reste obligatoire. L'ordre de collecte ne constitue jamais une
 admission ; seul le rapport validé habituel renouvelle la sélection.
 
+Dans chaque niveau de priorité paper, terminer d'abord les dossiers en DECODING
+ayant le moins de transactions encore à reconstruire. Le total d'un dossier
+FETCHING n'est pas encore connu et ne permet pas d'estimer sa taille finale.
+Les rafales restent bornées, un créneau sur quatre reste équitable et une erreur
+libère la priorité pendant le délai de reprise. Aucun wallet n'est supprimé.
+
 ## Validation locale du 20 septembre 2026
 
 Deux requêtes publiques de 100 blocs ont donné exactement les mêmes logs que

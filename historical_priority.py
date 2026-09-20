@@ -78,6 +78,8 @@ class PriorityCollector:
             elif report.get('paper_review_eligible'):
                 attention[report['wallet']]=1
         sources = observed_sources(self.db, self.cfg)
+        pending = dict(self.db.execute('''SELECT wallet,COUNT(*) FROM historical_transactions
+            WHERE payload IS NULL GROUP BY wallet'''))
         tiers = {}
         for wallet, token in self.db.execute('SELECT wallet,token FROM candidate_sources'):
             tiers[wallet] = max(tiers.get(wallet, 0), sources.get(token.lower(), {}).get('tier', 0))
@@ -91,6 +93,7 @@ class PriorityCollector:
             row = dict(source)
             row['source_tier'] = tiers.get(row['wallet'], 0)
             row['paper_attention'] = attention.get(row['wallet'],0)
+            row['pending_transactions'] = pending.get(row['wallet'],0)
             if is_dex_infrastructure(row['wallet'], self.cfg): continue
             with self.db:
                 self.db.execute('INSERT OR IGNORE INTO historical_priority_wallets(wallet) VALUES(?)', (row['wallet'],))
@@ -118,7 +121,13 @@ class PriorityCollector:
                 if state['focus'] not in due or state['remaining'] <= 0:
                     # Discovery strength is a queue preference, never proof of
                     # realized profit or independent identities.
-                    row = min(due.values(), key=lambda r:(-r['paper_attention'],r['rounds'], -r['source_tier'],
+                    row = min(due.values(), key=lambda r:(-r['paper_attention'],
+                        # Finish bounded, fully enumerated paper dossiers before
+                        # spreading another burst across every expired wallet.
+                        # Unknown FETCHING totals are not estimates of full size.
+                        0 if r['paper_attention'] and r['phase']=='DECODING' else 1,
+                        r['pending_transactions'] if r['paper_attention'] and r['phase']=='DECODING' else r['rounds'],
+                        r['rounds'], -r['source_tier'],
                         -r['source_winners'], r['best_early_rank'] or 10**9,
                         r['phase'] == 'COMPLETE', r['served'], r['first_discovered_at'], r['wallet']))
                     state['focus'], state['remaining'] = row['wallet'], self.cfg.historical_focus_steps
