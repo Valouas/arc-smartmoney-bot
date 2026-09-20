@@ -60,6 +60,11 @@ class Settings:
     launch_max_market_checks_per_cycle: int = _i("LAUNCH_MAX_MARKET_CHECKS_PER_CYCLE", 40)
 
     winner_return_pct: float = _f("WINNER_RETURN_PCT", 100)
+    # Discovery sources only; do not change forward winner/promotion thresholds.
+    discovery_min_multiple: float = _f('DISCOVERY_MIN_MULTIPLE', 5)
+    discovery_priority_multiple: float = _f('DISCOVERY_PRIORITY_MULTIPLE', 10)
+    discovery_source_tokens_per_cycle: int = _i('DISCOVERY_SOURCE_TOKENS_PER_CYCLE', 3)
+    discovery_source_retry_seconds: int = _i('DISCOVERY_SOURCE_RETRY_SECONDS', 300)
     scanner_capture_rate: float = _f("SCANNER_CAPTURE_RATE", 0.35)
     scanner_min_launch_buys: int = _i("SCANNER_MIN_LAUNCH_BUYS", 15)
     scanner_buys_per_active_hour: float = _f("SCANNER_BUYS_PER_ACTIVE_HOUR", 12)
@@ -126,6 +131,11 @@ class Settings:
     alchemy_sync_seconds: int = _i('ALCHEMY_SYNC_SECONDS',300)
 
     def __post_init__(self):
+        if (not math.isfinite(self.discovery_min_multiple) or self.discovery_min_multiple < 1
+                or not math.isfinite(self.discovery_priority_multiple)
+                or self.discovery_priority_multiple < self.discovery_min_multiple
+                or self.discovery_source_tokens_per_cycle < 1 or self.discovery_source_retry_seconds < 1):
+            raise ValueError('Invalid discovery source settings')
         if (not 1 <= self.historical_focus_steps <= 16 or self.historical_inactive_days < 1
                 or self.historical_inactive_refresh_seconds < 1 or self.historical_retry_seconds < 1):
             raise ValueError('Invalid historical scheduling settings')

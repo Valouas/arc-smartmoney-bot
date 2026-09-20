@@ -206,7 +206,7 @@ def discovery(db):
     return d
 
 
-def test_history_failure_never_completes_candidate_or_winner(db):
+def test_history_failure_never_completes_candidate_or_winner(db, monkeypatch):
     d=discovery(db); db.upsert_discovery_candidate(W,T,1)
     d.activity_hashes=Mock(side_effect=ArcscanError('failed'))
     with pytest.raises(ArcscanError): d.hydrate_wallet(W)
@@ -214,7 +214,9 @@ def test_history_failure_never_completes_candidate_or_winner(db):
     assert not row['history_complete'] and row['hydrated_at'] is None
     db.db.execute('INSERT INTO discovery_winners VALUES(?,1,200,NULL)',(T,)); db.db.commit()
     d.early_buyers=Mock(side_effect=ArcscanError('failed'))
+    monkeypatch.setattr('auto_discovery.observed_sources',lambda *args:{T:{'tier':2}})
     assert d.discover_from_winners()==0
+    d.early_buyers.assert_called_once_with(T)
     assert db.db.execute('SELECT processed_at FROM discovery_winners').fetchone()[0] is None
 
 

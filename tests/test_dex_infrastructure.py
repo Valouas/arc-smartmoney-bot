@@ -118,9 +118,10 @@ def test_early_buyers_skip_infrastructure_before_network_and_rank(policy, db, mo
     assert decode.call_args.args[2] == W
 
 
-def test_winner_insert_guard_even_with_old_buyer_list(policy, db):
+def test_winner_insert_guard_even_with_old_buyer_list(policy, db, monkeypatch):
     d = discovery(db,policy)
     db.db.execute('INSERT INTO discovery_winners VALUES(?,1,150,NULL)',(T,)); db.commit()
+    monkeypatch.setattr('auto_discovery.observed_sources',lambda *args:{T:{'tier':2}})
     d.early_buyers = lambda _: [(INFRA,1,H),(W,2,H)]
     assert d.discover_from_winners() == 1
     assert [r[0] for r in db.db.execute('SELECT wallet FROM discovery_candidates')] == [W]

@@ -15,6 +15,7 @@ from atomic_json import write_json
 from forward_metrics import build_forward_profile
 from wallet_policy import is_dex_infrastructure, require_smart_money_wallet
 from formatting import promoted_wallet_text
+from discovery_sources import observed_sources
 
 logging.basicConfig(level=getattr(logging, SETTINGS.log_level, logging.INFO), format="%(asctime)s %(levelname)s %(message)s")
 log=logging.getLogger("auto-discovery")
@@ -28,19 +29,19 @@ class AutoDiscovery:
         self.identities=IdentityGraph(self.arc)
 
     def detect_winners(self):
-        rows=self.db.db.execute(
-            """SELECT l.token,l.first_price_usd,MAX(s.price_usd) max_price
-               FROM launches l JOIN launch_snapshots s ON lower(s.token)=lower(l.token)
-               WHERE l.first_price_usd IS NOT NULL AND l.first_price_usd>0 AND s.price_usd IS NOT NULL
-               GROUP BY l.token,l.first_price_usd"""
-        ).fetchall()
+        sources=observed_sources(self.db.db,self.cfg)
         found=0; now=int(time.time())
-        for r in rows:
-            ret=(float(r["max_price"])/float(r["first_price_usd"])-1)*100
-            if ret < self.cfg.winner_return_pct: continue
-            self.db.db.execute("INSERT OR IGNORE INTO discovery_winners(token,detected_at,max_return_pct) VALUES(?,?,?)", (r["token"].lower(),now,ret))
+        for token,source in sources.items():
+            ret=float((source['multiple']-1)*100)
+            self.db.db.execute('''INSERT INTO discovery_winners(token,detected_at,max_return_pct) VALUES(?,?,?)
+                ON CONFLICT(token) DO UPDATE SET max_return_pct=MAX(max_return_pct,excluded.max_return_pct)''',
+                (token,now,ret))
             found+=1
-        self.db.db.commit(); return found
+        self.db.db.commit()
+        log.info('discovery sources | minimum_multiple=%s priority_multiple=%s eligible=%s priority=%s',
+                 self.cfg.discovery_min_multiple,self.cfg.discovery_priority_multiple,found,
+                 sum(source['tier']==2 for source in sources.values()))
+        return found
 
     def _all_transfer_rows(self, token):
         cursor=None; rows=[]; cursors=set()
@@ -79,10 +80,25 @@ class AutoDiscovery:
         return buyers
 
     def discover_from_winners(self):
-        winners=self.db.db.execute("SELECT * FROM discovery_winners WHERE processed_at IS NULL ORDER BY detected_at").fetchall()
+        # Revalidate even legacy queued winners. Raising the discovery floor
+        # never deletes their candidates, sources or completed analyses.
+        sources=observed_sources(self.db.db,self.cfg)
+        self.db.db.execute('''CREATE TABLE IF NOT EXISTS discovery_source_attempts
+            (token TEXT PRIMARY KEY,last_attempt INTEGER NOT NULL)''')
+        self.db.db.commit()
+        now=int(time.time())
+        winners=self.db.db.execute('''SELECT w.*,a.last_attempt FROM discovery_winners w
+            LEFT JOIN discovery_source_attempts a ON a.token=w.token
+            WHERE w.processed_at IS NULL AND (a.last_attempt IS NULL OR a.last_attempt<=?)''',
+            (now-self.cfg.discovery_source_retry_seconds,)).fetchall()
+        winners=[w for w in winners if w['token'].lower() in sources]
+        winners.sort(key=lambda w:(-sources[w['token'].lower()]['tier'],
+            w['last_attempt'] or 0, w['detected_at'], w['token']))
         total=0
-        for w in winners:
+        for w in winners[:self.cfg.discovery_source_tokens_per_cycle]:
             token=w["token"]
+            self.db.db.execute('INSERT OR REPLACE INTO discovery_source_attempts VALUES(?,?)',(token,now))
+            self.db.db.commit()
             try: buyers=self.early_buyers(token)
             except ArcscanError:
                 log.warning("winner history incomplete: %s", token)

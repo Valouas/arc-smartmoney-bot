@@ -6,6 +6,7 @@ from arcscan import ArcscanError
 from historical_store import VERSION
 from rpc_transport import RPCError
 from wallet_policy import is_dex_infrastructure
+from discovery_sources import observed_sources
 
 
 SCHEMA = '''
@@ -66,6 +67,10 @@ class PriorityCollector:
         return base
 
     def candidates(self, now):
+        sources = observed_sources(self.db, self.cfg)
+        tiers = {}
+        for wallet, token in self.db.execute('SELECT wallet,token FROM candidate_sources'):
+            tiers[wallet] = max(tiers.get(wallet, 0), sources.get(token.lower(), {}).get('tier', 0))
         rows = self.db.execute('''SELECT c.wallet,c.first_discovered_at,c.source_winners,c.best_early_rank,
             r.phase,r.version,r.completed_at,r.cutoff_block,r.cutoff_hash,r.cutoff_at,r.error,
             p.rounds,p.served,p.retry_at,p.activity_generation,p.last_activity
@@ -74,6 +79,7 @@ class PriorityCollector:
         due, deferred = {}, 0
         for source in rows:
             row = dict(source)
+            row['source_tier'] = tiers.get(row['wallet'], 0)
             if is_dex_infrastructure(row['wallet'], self.cfg): continue
             with self.db:
                 self.db.execute('INSERT OR IGNORE INTO historical_priority_wallets(wallet) VALUES(?)', (row['wallet'],))
@@ -101,7 +107,7 @@ class PriorityCollector:
                 if state['focus'] not in due or state['remaining'] <= 0:
                     # Discovery strength is a queue preference, never proof of
                     # realized profit or independent identities.
-                    row = min(due.values(), key=lambda r:(r['rounds'],
+                    row = min(due.values(), key=lambda r:(r['rounds'], -r['source_tier'],
                         -r['source_winners'], r['best_early_rank'] or 10**9,
                         r['phase'] == 'COMPLETE', r['served'], r['first_discovered_at'], r['wallet']))
                     state['focus'], state['remaining'] = row['wallet'], self.cfg.historical_focus_steps

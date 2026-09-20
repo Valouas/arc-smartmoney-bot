@@ -360,8 +360,9 @@ Sur quatre etapes, trois sont consacrees au travail prioritaire et une au wallet
 eligible servi le moins recemment. La rotation est en SQLite et survit aux
 redemarrages, meme avec une seule etape par cycle.
 
-Dans une ronde prioritaire, le nombre de tokens winners sources puis le rang
-d'achat precoce determinent l'ordre. Ce sont des indices de decouverte, pas une
+Dans une ronde prioritaire, les sources x10 ou plus passent avant les sources
+x5 ou plus, puis le nombre de tokens winners sources et le rang d'achat precoce
+determinent l'ordre (voir [DISCOVERY_SOURCES.md](DISCOVERY_SOURCES.md)). Ce sont des indices de decouverte, pas une
 preuve de profit realise ni d'independance des identites. Le wallet choisi recoit
 jusqu'a `HISTORICAL_FOCUS_STEPS=4` etapes prioritaires pour terminer plus vite sa
 pagination et sa reconstruction. Puis la ronde passe aux autres wallets. Un
