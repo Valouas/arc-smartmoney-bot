@@ -25,7 +25,7 @@ def combined_report(path, cfg, now=None, selection_path=None, paper_path=None):
     try:
         selected = load_selection(selection_path or path.parent/'paper_review_selection.json',cfg,now)
     except SelectionError: selected = {}
-    dune, zerion, attempts, observed = {}, {}, {}, {}
+    dune, zerion, attempts, observed, nansen = {}, {}, {}, {}, {}
     with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=10)) as db:
         db.row_factory = sqlite3.Row
         db.execute('BEGIN')
@@ -37,6 +37,8 @@ def combined_report(path, cfg, now=None, selection_path=None, paper_path=None):
         if 'external_wallet_metrics' in tables:
             for row in db.execute("SELECT * FROM external_wallet_metrics WHERE provider='zerion' AND payload IS NOT NULL AND observed_at<=? AND retrieved_at<=? ORDER BY retrieved_at,observed_at",(now,now)):
                 zerion[row['wallet']] = dict(row)
+            for row in db.execute("SELECT * FROM external_wallet_metrics WHERE provider='nansen' AND payload IS NOT NULL AND observed_at<=? AND retrieved_at<=? ORDER BY retrieved_at,observed_at",(now,now)):
+                nansen[row['wallet']] = dict(row)
         if 'external_fetch_state' in tables:
             attempts = {(r['provider'],r['wallet']):dict(r) for r in db.execute('SELECT * FROM external_fetch_state WHERE attempted_at<=?',(now,))}
     paper = {}
@@ -48,9 +50,10 @@ def combined_report(path, cfg, now=None, selection_path=None, paper_path=None):
             for wallet,buys,sells in db.execute("SELECT wallet,SUM(side='BUY'),SUM(side='SELL') FROM fills WHERE filled_at<=? GROUP BY wallet",(now,)):
                 paper[wallet] = {'forward_copy_buys':buys,'forward_copy_sells':sells}
     rows = []
-    for wallet in set(local)|set(dune)|set(zerion):
+    for wallet in set(local)|set(dune)|set(zerion)|set(nansen):
         own, d, z = local.get(wallet,{}), dune.get(wallet,{}), zerion.get(wallet,{})
         dp, zp = json.loads(d['payload']) if d else {}, json.loads(z['payload']) if z else {}
+        np = json.loads(nansen[wallet]['payload']) if wallet in nansen else {}
         reasons = own.get('paper_review_blockers', ['local_audit_required'])
         is_selected = wallet in selected and wallet not in excluded
         state = 'PAPER_SELECTED' if is_selected else 'WATCH' if own else 'EXTERNAL_CANDIDATE'
@@ -67,6 +70,10 @@ def combined_report(path, cfg, now=None, selection_path=None, paper_path=None):
             'zerion_retrieved_at':z.get('retrieved_at'), 'zerion_data_complete':zp.get('data_complete',False),
             'zerion_missing_fields':zp.get('missing_fields'), 'zerion_error':last_error,
             'zerion_stale':not z or now-z['retrieved_at']>cfg.zerion_refresh_seconds or bool(last_error),
+            'nansen_metrics':np.get('metrics'), 'nansen_flags':np.get('flags'),
+            'nansen_date':np.get('date'), 'nansen_retrieved_at':np.get('retrieved_at'),
+            'nansen_pages_complete':np.get('pages_complete',False),
+            'nansen_data_complete':False,
             'infrastructure_excluded':wallet in excluded,
             'identity_cluster_id':own.get('identity_cluster_id'), 'identity_eligible':own.get('identity_eligible'),
             'funder':own.get('funder'), 'related_wallets_count':own.get('related_wallets_count'),
@@ -110,6 +117,11 @@ def show(rows, top):
               ' infra='+str(row['infrastructure_excluded'])+' cluster='+text(row['identity_cluster_id'])+
               ' funder='+text(row['funder'])+' concentration='+text(row['concentration_risk'])+
               ' paper_forward='+text(row['paper_forward_evidence']))
+        if row.get('nansen_metrics'):
+            n = row['nansen_metrics']
+            print('    Nansen (recherche): realized=$'+text(n.get('realized_gain'))+
+                  ' unrealized=$'+text(n.get('unrealized_gain'))+' total=$'+text(n.get('total_gain')))
+            print('    Nansen reserves: '+', '.join(row.get('nansen_flags') or []))
         print('    Blocages: '+', '.join(row['reason_not_paper_selected']))
         print('    Reserves paper: '+', '.join(row['paper_review_warnings'] or []))
         print('    Sources: Dune stale='+str(row['dune_stale'])+' Zerion stale='+str(row['zerion_stale'])+
