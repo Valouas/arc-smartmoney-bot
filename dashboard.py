@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent
 HOST, PORT = '127.0.0.1', 8001
 COMPONENTS = ('launch_indexer', 'wallet_profiler', 'auto_discovery', 'bot',
-              'historical_analysis', 'alchemy_webhook', 'paper_copy', 'ngrok', 'dashboard')
+              'historical_analysis', 'alchemy_webhook', 'alchemy_sync', 'paper_copy', 'ngrok', 'dashboard')
 HISTORY_FIELDS = ('wallet', 'historical_class', 'analysis_status', 'metrics_status',
                   'buys', 'closed_positions', 'open_positions_count', 'conservative_pnl_usdc',
                   'conservative_return', 'identity_cluster_size', 'paper_review_eligible',

@@ -72,8 +72,9 @@ def test_start_failure_shuts_down_only_already_created_children(local,cfg,monkey
     assert stop.call_args.args[0]=={'launch_indexer':p}
 
 
-@pytest.mark.parametrize('failed_role',['alchemy_webhook','dashboard'])
+@pytest.mark.parametrize('failed_role',['alchemy_webhook','dashboard','alchemy_sync'])
 def test_tunnel_or_receiver_failure_keeps_scanners(local,cfg,monkeypatch,capsys,failed_role):
+    if failed_role=='alchemy_sync': cfg.alchemy_sync_enabled=True
     monkeypatch.setattr(run_all,'preflight',lambda _:None)
     monkeypatch.setattr(run_all,'prepare',lambda _:None)
     monkeypatch.setattr(run_all,'tunnel',lambda _:None)

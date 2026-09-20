@@ -46,7 +46,27 @@ key. Restart the receiver after changing the environment file. `/health` returni
 valid signature. Verify a provider delivery returned 200 and appeared in the
 inbox. A test payload from another chain must remain rejected.
 
-Remote address synchronization is currently manual. Newly selected addresses
-are automatically covered by the live RPC fallback, but must also be added in
-Alchemy to receive notifications. No Notify auth token is assumed or extracted
-from browser credentials. An unavailable webhook does not stop either scanner.
+## Automatic subscriptions
+
+Set `ALCHEMY_SYNC_ENABLED=true`, `ALCHEMY_NOTIFY_AUTH_TOKEN`, `ALCHEMY_WEBHOOK_ID`
+and `ALCHEMY_WEBHOOK_EXPECTED_URL` in the local `.env`. The Notify token differs
+from the RPC API key and the webhook signing key. Never commit these secrets.
+
+The launcher runs `alchemy_sync.py` every `ALCHEMY_SYNC_SECONDS` (default 300).
+It verifies the exact webhook ID, Arc Mainnet, Address Activity, active state,
+destination and signing key before updating it. It reads every address page,
+adds missing paper-admitted wallets and existing exit-tracking wallets, and
+verifies the result with a fresh read. Already registered addresses are preserved.
+Membership in Alchemy never authorizes trades: the receiver and paper engine
+still enforce current local eligibility and infrastructure exclusions.
+
+Run `python alchemy_sync.py --once` for an immediate sync. Safe status counts are
+written to `data/alchemy_sync_status.json`; errors retry on the next cycle and
+never stop the independent live RPC scanner. No history or checkpoints change.
+Existing remote addresses are intentionally not removed, including manual ones;
+this may retain subscriptions to wallets that later leave paper selection.
+
+API documentation:
+- https://www.alchemy.com/docs/data/webhooks/webhooks-api-endpoints/notify-api-endpoints/team-webhooks
+- https://www.alchemy.com/docs/data/webhooks/webhooks-api-endpoints/notify-api-endpoints/webhook-addresses
+- https://www.alchemy.com/docs/data/webhooks/webhooks-api-endpoints/notify-api-endpoints/update-webhook-addresses

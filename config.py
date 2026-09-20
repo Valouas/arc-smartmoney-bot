@@ -114,8 +114,15 @@ class Settings:
     alchemy_webhook_host: str = os.getenv('ALCHEMY_WEBHOOK_HOST', '127.0.0.1')
     alchemy_webhook_port: int = _i('ALCHEMY_WEBHOOK_PORT', 8000)
     alchemy_webhook_signing_key: str = field(default=os.getenv('ALCHEMY_WEBHOOK_SIGNING_KEY', ''),repr=False)
+    alchemy_notify_auth_token: str = field(default=os.getenv('ALCHEMY_NOTIFY_AUTH_TOKEN',''),repr=False)
+    alchemy_webhook_id: str = os.getenv('ALCHEMY_WEBHOOK_ID','')
+    alchemy_webhook_expected_url: str = os.getenv('ALCHEMY_WEBHOOK_EXPECTED_URL','')
+    alchemy_sync_enabled: bool = os.getenv('ALCHEMY_SYNC_ENABLED','false').lower() == 'true'
+    alchemy_sync_seconds: int = _i('ALCHEMY_SYNC_SECONDS',300)
 
     def __post_init__(self):
+        if self.alchemy_sync_seconds < 60:
+            raise ValueError('ALCHEMY_SYNC_SECONDS must be at least 60')
         if not 1 <= self.scanner_log_window_blocks <= 10:
             raise ValueError('SCANNER_LOG_WINDOW_BLOCKS must be between 1 and 10')
         if (self.automatic_backup_interval_seconds < 60 or self.automatic_backup_keep_last < 2

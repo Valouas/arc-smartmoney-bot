@@ -23,7 +23,7 @@ LOCK=Path('data/run_all.lock')
 STATE=Path('data/run_all_state.json')
 STOP=Path('data/run_all.stop')
 LOGS=Path('data/launcher_logs')
-ROLES=('launch_indexer','wallet_profiler','auto_discovery','bot','historical_analysis','alchemy_webhook','paper_copy','dashboard','automatic_backup')
+ROLES=('launch_indexer','wallet_profiler','auto_discovery','bot','historical_analysis','alchemy_webhook','paper_copy','dashboard','automatic_backup','alchemy_sync')
 
 
 def record_event(event, **details):
@@ -78,6 +78,7 @@ def roles_for(cfg):
     roles=list(ROLES[:4])
     if cfg.historical_analysis_enabled: roles.append('historical_analysis')
     if cfg.alchemy_webhook_enabled: roles.append('alchemy_webhook')
+    if cfg.alchemy_webhook_enabled and getattr(cfg,'alchemy_sync_enabled',False): roles.append('alchemy_sync')
     roles += ['paper_copy','dashboard']
     if getattr(cfg,'automatic_backup_enabled',False): roles.append('automatic_backup')
     return roles
@@ -184,7 +185,8 @@ def prepare(cfg):
     with contextlib.closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=5)) as db:
         addresses=set(effective_watchlist(WatchlistManager(),db,cfg))|watch_addresses(cfg)
     write_json('data/alchemy_addresses.json',{'addresses':sorted(addresses)})
-    print('Liste Alchemy : data/alchemy_addresses.json (synchronisation distante manuelle)',flush=True)
+    mode='ajout automatique des wallets paper' if getattr(cfg,'alchemy_sync_enabled',False) else 'synchronisation distante manuelle'
+    print('Liste Alchemy : data/alchemy_addresses.json ('+mode+')',flush=True)
 
 
 def save_state(children,url,status):
@@ -232,7 +234,7 @@ def supervise(cfg):
                 if p.poll() is None or role in warned: continue
                 warned.add(role)
                 record_event('child_exited',role=role,child_pid=p.pid,exit_code=p.poll())
-                if role in ('ngrok','alchemy_webhook','dashboard'):
+                if role in ('ngrok','alchemy_webhook','dashboard','alchemy_sync'):
                     print(role+' indisponible ; scanners RPC maintenus. Consulter son journal.',flush=True)
                 else:
                     reason='core_worker_exit'
