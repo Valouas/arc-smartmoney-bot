@@ -14,6 +14,16 @@ def _i(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class Settings:
+    external_discovery_enabled: bool = os.getenv('EXTERNAL_DISCOVERY_ENABLED', 'false').lower() == 'true'
+    dune_enabled: bool = os.getenv('DUNE_ENABLED', 'false').lower() == 'true'
+    dune_api_key: str = field(default=os.getenv('DUNE_API_KEY', ''), repr=False)
+    dune_query_id: str = os.getenv('DUNE_QUERY_ID', '').strip()
+    dune_refresh_seconds: int = _i('DUNE_REFRESH_SECONDS', 900)
+    dune_max_candidates: int = _i('DUNE_MAX_CANDIDATES', 500)
+    zerion_enabled: bool = os.getenv('ZERION_ENABLED', 'false').lower() == 'true'
+    zerion_api_key: str = field(default=os.getenv('ZERION_API_KEY', ''), repr=False)
+    zerion_refresh_seconds: int = _i('ZERION_REFRESH_SECONDS', 3600)
+    zerion_max_wallets_per_cycle: int = _i('ZERION_MAX_WALLETS_PER_CYCLE', 25)
     rpc_url: str = os.getenv("ARC_RPC_URL", "https://rpc.arc-scan.org")
     rpc_fallback_urls: tuple[str, ...] = tuple(u.strip() for u in os.getenv("ARC_RPC_FALLBACK_URLS", "").split(',') if u.strip())
     rpc_requests_per_second: float = _f("ARC_RPC_REQUESTS_PER_SECOND", 2)
@@ -135,6 +145,10 @@ class Settings:
     alchemy_sync_seconds: int = _i('ALCHEMY_SYNC_SECONDS',300)
 
     def __post_init__(self):
+        if (self.dune_refresh_seconds < 60 or self.zerion_refresh_seconds < 60
+                or not 1 <= self.dune_max_candidates <= 5000
+                or not 1 <= self.zerion_max_wallets_per_cycle <= 100):
+            raise ValueError('Invalid external data collection limits')
         if not 10 <= self.paper_log_query_blocks <= 1000 or not 40 <= self.paper_catchup_window_blocks <= 2000:
             raise ValueError('Invalid paper transport windows')
         if self.research_paper_only and not (self.historical_analysis_enabled and self.paper_live_enabled):
