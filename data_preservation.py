@@ -32,6 +32,8 @@ def install_database(path, tables):
     with closing(sqlite3.connect(path.as_uri()+'?mode=rw',uri=True,timeout=30)) as db:
         existing={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         with db:
+            # DDL must share one transaction: never expose a gap in protection.
+            db.execute('BEGIN IMMEDIATE')
             db.execute('''CREATE TABLE IF NOT EXISTS retained_evidence_versions(
                 table_name TEXT NOT NULL,row_json TEXT NOT NULL,archived_at INTEGER NOT NULL,
                 UNIQUE(table_name,row_json))''')
@@ -47,10 +49,15 @@ def install_database(path, tables):
                 old,new=encoded('OLD'),encoded('NEW')
                 literal="'"+table.replace("'","''")+"'"
                 save='INSERT OR IGNORE INTO retained_evidence_versions SELECT '+literal+','+old+",CAST(strftime('%s','now') AS INTEGER)"
+                # An outer UPSERT can override OR IGNORE in a trigger. INSERT
+                # and UPDATE triggers may both retain the same old row, so
+                # exclude it explicitly before inserting (SQLite serializes writes).
+                missing='NOT EXISTS (SELECT 1 FROM retained_evidence_versions AS retained WHERE retained.table_name='+literal+' AND retained.row_json='+old+')'
                 for operation in ('DELETE','UPDATE'):
                     when=' WHEN '+old+' IS NOT '+new if operation=='UPDATE' else ''
+                    db.execute('DROP TRIGGER IF EXISTS '+quoted('retain_'+table+'_'+operation.lower()))
                     db.execute('CREATE TRIGGER IF NOT EXISTS '+quoted('retain_'+table+'_'+operation.lower())+
-                        ' BEFORE '+operation+' ON '+quoted(table)+when+' BEGIN '+save+'; END')
+                        ' BEFORE '+operation+' ON '+quoted(table)+when+' BEGIN '+save+' WHERE '+missing+'; END')
                 keys=[]
                 primary=[c[1] for c in sorted(columns,key=lambda c:c[5]) if c[5]]
                 if primary: keys.append(primary)
@@ -60,9 +67,10 @@ def install_database(path, tables):
                         if cols and all(cols):keys.append(cols)
                 if keys:
                     matches=' OR '.join('('+' AND '.join('OLD.'+quoted(c)+'=NEW.'+quoted(c) for c in key)+')' for key in keys)
+                    db.execute('DROP TRIGGER IF EXISTS '+quoted('retain_'+table+'_replace'))
                     db.execute('CREATE TRIGGER IF NOT EXISTS '+quoted('retain_'+table+'_replace')+
                         ' BEFORE INSERT ON '+quoted(table)+' BEGIN '+save+' FROM '+quoted(table)+
-                        ' AS OLD WHERE ('+matches+') AND '+old+' IS NOT '+new+'; END')
+                        ' AS OLD WHERE ('+matches+') AND '+old+' IS NOT '+new+' AND '+missing+'; END')
 
 
 def install_all(root=ROOT):

@@ -37,6 +37,27 @@ def test_unique_constraint_replace_and_blob_preserved(tmp_path):
         assert db.execute('SELECT payload FROM evidence').fetchone()[0]==b'new'
 
 
+@pytest.mark.parametrize('clause', ['', 'OR ABORT', 'OR REPLACE'])
+def test_upsert_retains_versions_without_archive_conflict(tmp_path,clause):
+    p=tmp_path/'evidence.sqlite3'
+    with sqlite3.connect(p) as db:
+        db.execute('CREATE TABLE evidence(id INTEGER PRIMARY KEY,payload TEXT)')
+        db.execute("INSERT INTO evidence VALUES(1,'a')")
+    install_database(p,{'evidence'})
+    with sqlite3.connect(p) as db:
+        for value in ('b','a','b'):
+            db.execute('INSERT '+clause+' INTO evidence VALUES(1,?) ON CONFLICT(id) '
+                       'DO UPDATE SET payload=excluded.payload',(value,))
+        assert db.execute('SELECT payload FROM evidence').fetchone()[0]=='b'
+        saved=[json.loads(r[0]) for r in db.execute('SELECT row_json FROM retained_evidence_versions')]
+        assert sorted(r['payload'] for r in saved)==['a','b']
+    # Reinstallation upgrades live triggers without replacing archived evidence.
+    install_database(p,{'evidence'})
+    with sqlite3.connect(p) as db:
+        db.execute("UPDATE evidence SET payload='c'")
+        assert db.execute('SELECT count(*) FROM retained_evidence_versions').fetchone()[0]==2
+
+
 def test_rollback_also_rolls_back_archive_and_idempotent_install(tmp_path):
     p=tmp_path/'evidence.sqlite3'
     with sqlite3.connect(p) as db:
