@@ -33,6 +33,25 @@ one read transaction. No HTTP/client import, campaign, refresh, migration or wri
 
 ## Metric definitions — descriptive, not engine thresholds
 
+## Copy frequency ceiling (owner-approved: 50/day)
+
+`COPY_MAX_OPERATIONS_PER_DAY=50` excludes wallets above 50 reported trading
+operations per day **on average over the exact stored date window** from copy
+research candidates. Exactly 50 passes. Numerator: Nansen summary `traded_times`;
+denominator: `(date.to - date.from).total_seconds()/86400`, without rounding.
+This does not measure active-day frequency, a daily peak or holding duration.
+Missing/invalid count or dates produce `UNKNOWN_FREQUENCY`, never zero activity.
+
+All shortlist entries, positions and historical scores are preserved. The report
+shows operation count, days, daily average and frequency status. Only scored
+wallets within the ceiling have `copy_research_eligible=true` and appear first;
+excluded or unknown-frequency entries remain visible below, with no replacement
+or bulk expansion. This flag is local research eligibility, not `PAPER_SELECTED`
+or live authority. Existing engine scoring, historical collection and paper
+execution are unchanged. No provider calls or SQLite writes are needed.
+
+## Position score
+
 One observation is one distinct token position over the provider's stored date
 range, **not one purchase, one closed trade or the token's peak price**. The two
 views are deduplicated by token. Realized PnL comes from the realized view when

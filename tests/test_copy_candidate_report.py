@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from copy_candidate_report import main, report, score, shortlist, wilson
+from copy_candidate_report import main, report, score, shortlist, wilson, frequency
 
 W = '0x' + '1'*40
 OTHER = '0x' + '2'*40
@@ -23,6 +23,8 @@ def position(i, multiple=2, cost=100, holding=0, latent=0):
 
 def payload(positions=None, opened=None, wallet=W):
     return dict(wallet=wallet, source='nansen', chain_id=5042, pages_complete=True,
+                summary={'traded_times': 100},
+                date={'from': '2026-07-15T00:00:00Z', 'to': '2026-09-20T23:10:14Z'},
                 positions=dict(realized=positions if positions is not None else [position(1)],
                                open=opened or []), metrics=dict(total_gain=100))
 
@@ -194,3 +196,48 @@ def test_shortlist_add_remove_dedup_and_missing_file(stored):
     assert [r['wallet'] for r in report(db, path)['rows']] == [OTHER]
     with pytest.raises(FileNotFoundError):
         shortlist(path.with_name('absent.json'))
+
+
+@pytest.mark.parametrize('count,status', [(0,'WITHIN_FREQUENCY_LIMIT'), (100,'WITHIN_FREQUENCY_LIMIT'),
+                                        (101,'EXCLUDED_FREQUENCY')])
+def test_frequency_boundary_inclusive(count,status):
+    p=payload()
+    p.update(summary={'traded_times':count},date={'from':'2026-09-01T00:00:00Z','to':'2026-09-03T00:00:00Z'})
+    f=frequency(p)
+    assert f['operations_per_day']==count/2
+    assert f['frequency_status']==status
+
+
+@pytest.mark.parametrize('count', [None, -1, True, 1.5, float('inf'), '100'])
+def test_unknown_operation_count_not_treated_as_zero(count):
+    p=payload();p['summary']['traded_times']=count
+    assert frequency(p)['frequency_status']=='UNKNOWN_FREQUENCY'
+
+
+@pytest.mark.parametrize('dates', [{}, {'from':'invalid','to':'invalid'},
+    {'from':'2026-09-01','to':'2026-09-03'},
+    {'from':'2026-09-03T00:00:00Z','to':'2026-09-01T00:00:00Z'}])
+def test_invalid_dates_no_frequency(dates):
+    p=payload();p['date']=dates
+    assert frequency(p)['operations_per_day'] is None
+
+
+def test_frequency_uses_fractional_days_not_rounded_days():
+    p=payload();p.update(summary={'traded_times':51},date={'from':'2026-09-01T00:00:00Z','to':'2026-09-02T12:00:00Z'})
+    assert frequency(p)['operations_per_day']==34
+
+
+def test_exclusion_preserves_shortlist_pnl_score_and_authority(stored):
+    db,path=stored
+    with sqlite3.connect(db) as con:
+        p=payload();p['summary']['traded_times']=100000
+        con.execute("UPDATE external_wallet_metrics SET payload=? WHERE wallet=? AND provider='nansen'",(json.dumps(p),W))
+    before=db.read_bytes(),path.read_bytes()
+    result=report(db,path)
+    r=next(r for r in result['rows'] if r['wallet']==W)
+    assert r['frequency_status']=='EXCLUDED_FREQUENCY'
+    assert r['historical_copy_score'] is not None and r['pnl_informative']
+    assert not r['copy_research_eligible'] and not r['paper_selected'] and not r['live_signal_authority']
+    assert result['wallets_excluded_frequency']==1
+    assert (db.read_bytes(),path.read_bytes())==before
+    assert report(db,path,max_operations_per_day=100000)['copy_research_candidates']==1
