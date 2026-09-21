@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "purpose": "copy_research_shortlist",
+  "wallets": [
+    "0xa11b1436583ffb4c2429c55204bf67b6ec94e3cf",
+    "0xb34904567064bfe2c571aa9cc7b319c6ad31662e",
+    "0x6981e63960e0f6434cb97280dcfe7f5865b5be9e",
+    "0x58acb4b06330c0e11a4fc30babf34d0bff25fb0f",
+    "0x4d008de467ca8ad0f436d6f00e53d30e504f322c",
+    "0x8c89687dbc2e36a1d3852d9e858431aba5421c57",
+    "0x0c8b64256d860c2ca5972009e76c8a2bb76f3f93",
+    "0x2eb95ab593dbdc42db4c2c361917d915daf6563a",
+    "0xc5d3c566a195cf4a9b8b29dc3c7f8e133d7cf19e",
+    "0x81fbd8db334dff07761678ba5e9928f8b5918944",
+    "0x07f79470cd94739288c5beb85bc2e7b6a28fe700",
+    "0xf7215d5ac8f2e784f83f3cbed1a5c159589f4c7e",
+    "0x92a2297d3ab8c733146dd2ed858117c85d0caa5a",
+    "0xccd087ff7fe9f3aa21a4ac55d7670d915b6a0a81",
+    "0xafc5f350a0635456b7d1056e5d2dee6511ae589f"
+  ]
+}
