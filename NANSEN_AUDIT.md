@@ -3,7 +3,66 @@
 Le connecteur interroge uniquement les deux routes de lecture PnL Nansen, avec
 `chain=arc`. Il ne modifie ni les statuts des wallets, ni le scoring, ni les
 selections paper, ni les checkpoints. Aucun achat de credits, signer ou broadcast.
-Il ne tourne pas automatiquement dans le superviseur.
+L'essai reste manuel. Le collecteur par lots est une option du superviseur decrite ci-dessous.
+
+## Campagne par lots (apres rechargement et autorisation)
+
+Configuration du nouveau collecteur `nansen_bulk.py` :
+
+```dotenv
+NANSEN_BULK_ENABLED=true
+NANSEN_BULK_MAX_REQUESTS=20000
+```
+
+Le superviseur `run_all.py` / `LANCER_BOT.bat` lance ce collecteur et l'arrete
+proprement avec les autres services. Sa panne ne coupe pas le scanner historique.
+Le paper reste soumis a `PAPER_COPY_PAUSED`; Nansen ne peut pas le reactiver.
+
+1. Photographier l'univers des wallets connus au demarrage, infrastructure exclue.
+   Ne filtrer ni les contrats non listes, ni les wallets peu actifs ou deficitaires.
+2. Recuperer le resume de chacun. Une erreur reste visible; elle n'est pas assimilee
+   a un wallet non rentable. Trois erreurs de schema consecutives arretent la collecte
+   pour verification, plutot que de gaspiller tout le budget.
+3. Recuperer les details realises ET ouverts en priorite selon le meilleur PnL deja
+   disponible (Nansen realise, Zerion total ou prudent local). C'est seulement un
+   ordre de traitement : les autres dossiers restent dans la file.
+4. Arreter les appels au plafond persiste ou lorsque le solde tombe a 100 credits.
+   Aucun achat, remise a zero quotidienne, recharge ni nouveau tour automatique.
+
+Le scope et la date de fin sont fixes pour reutiliser les 60 pages de l'essai.
+Les nouveaux wallets decouverts apres cette photographie ne sont pas ajoutes
+silencieusement a son budget. Les compteurs du tableau de bord mesurent cette
+campagne; les 19 dossiers precedemment importes restent disponibles pendant la
+nouvelle collecte des resumes. Aucun resultat local n'est remplace.
+
+Le cache, la file et les reservations de credits sont persistes dans
+`data/nansen_bulk.sqlite3` (WAL, transactions durables). Chaque page est stockee
+separement : pas de reecriture d'un enorme JSON a chaque requete. Cette base est
+incluse dans les sauvegardes SQLite automatiques. Ne pas la supprimer ni la renommer
+pour relancer : cela perdrait le budget cumule et les pages reutilisables.
+
+Les resumes sont importes sous `nansen_summary`, avec positions ouvertes non
+verifiees et aucune autorite. Seuls les dossiers dont les deux vues sont entierement
+recues sont importes sous `nansen`, toujours comme recherche externe non validee.
+Les imports sont idempotents et rejouables apres une interruption entre les deux bases.
+
+```powershell
+# Statut local, sans consommer de credits
+.\.venv\Scripts\python.exe nansen_bulk.py --status
+# Tests locaux de reprise, budgets, sauvegardes et absence d'autorite
+.\.venv\Scripts\python.exe -m pytest tests/test_nansen.py tests/test_nansen_bulk.py -q
+```
+
+Le tableau de bord affiche les resumes, dossiers detailles, tentatives, erreurs,
+solde recu et fraicheur de la campagne. Un processus vivant ne signifie pas qu'un
+budget epuise sera depasse : il reste en attente sans nouveaux appels.
+
+Campagne locale du 21 septembre 2026 : 7 554 wallets connus, plafond 20 000
+tentatives nouvelles, lancement explicitement autorise par l'utilisateur.
+Premiere requete nouvelle facturee 1 credit; solde retourne 20 009. Ces requetes
+s'ajoutent aux 60 credits de l'essai. Avec pagination et reserve, ce budget peut ne
+pas suffire a recevoir les details de tous les wallets; les dossiers restants
+seront conserves en attente.
 
 ## Configuration et commandes PowerShell
 

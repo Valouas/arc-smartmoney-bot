@@ -25,7 +25,7 @@ def combined_report(path, cfg, now=None, selection_path=None, paper_path=None):
     try:
         selected = load_selection(selection_path or path.parent/'paper_review_selection.json',cfg,now)
     except SelectionError: selected = {}
-    dune, zerion, attempts, observed, nansen = {}, {}, {}, {}, {}
+    dune, zerion, attempts, observed, nansen, nansen_summaries = {}, {}, {}, {}, {}, {}
     with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=10)) as db:
         db.row_factory = sqlite3.Row
         db.execute('BEGIN')
@@ -39,6 +39,8 @@ def combined_report(path, cfg, now=None, selection_path=None, paper_path=None):
                 zerion[row['wallet']] = dict(row)
             for row in db.execute("SELECT * FROM external_wallet_metrics WHERE provider='nansen' AND payload IS NOT NULL AND observed_at<=? AND retrieved_at<=? ORDER BY retrieved_at,observed_at",(now,now)):
                 nansen[row['wallet']] = dict(row)
+            for row in db.execute("SELECT * FROM external_wallet_metrics WHERE provider='nansen_summary' AND payload IS NOT NULL AND observed_at<=? AND retrieved_at<=? ORDER BY retrieved_at,observed_at",(now,now)):
+                nansen_summaries[row['wallet']] = json.loads(row['payload'])
         if 'external_fetch_state' in tables:
             attempts = {(r['provider'],r['wallet']):dict(r) for r in db.execute('SELECT * FROM external_fetch_state WHERE attempted_at<=?',(now,))}
     paper = {}
@@ -50,7 +52,7 @@ def combined_report(path, cfg, now=None, selection_path=None, paper_path=None):
             for wallet,buys,sells in db.execute("SELECT wallet,SUM(side='BUY'),SUM(side='SELL') FROM fills WHERE filled_at<=? GROUP BY wallet",(now,)):
                 paper[wallet] = {'forward_copy_buys':buys,'forward_copy_sells':sells}
     rows = []
-    for wallet in set(local)|set(dune)|set(zerion)|set(nansen):
+    for wallet in set(local)|set(dune)|set(zerion)|set(nansen)|set(nansen_summaries):
         own, d, z = local.get(wallet,{}), dune.get(wallet,{}), zerion.get(wallet,{})
         dp, zp = json.loads(d['payload']) if d else {}, json.loads(z['payload']) if z else {}
         np = json.loads(nansen[wallet]['payload']) if wallet in nansen else {}
@@ -74,6 +76,8 @@ def combined_report(path, cfg, now=None, selection_path=None, paper_path=None):
             'nansen_date':np.get('date'), 'nansen_retrieved_at':np.get('retrieved_at'),
             'nansen_pages_complete':np.get('pages_complete',False),
             'nansen_data_complete':False,
+            'nansen_summary':nansen_summaries.get(wallet,{}).get('summary'),
+            'nansen_summary_date':nansen_summaries.get(wallet,{}).get('date'),
             'infrastructure_excluded':wallet in excluded,
             'identity_cluster_id':own.get('identity_cluster_id'), 'identity_eligible':own.get('identity_eligible'),
             'funder':own.get('funder'), 'related_wallets_count':own.get('related_wallets_count'),
@@ -122,6 +126,9 @@ def show(rows, top):
             print('    Nansen (recherche): realized=$'+text(n.get('realized_gain'))+
                   ' unrealized=$'+text(n.get('unrealized_gain'))+' total=$'+text(n.get('total_gain')))
             print('    Nansen reserves: '+', '.join(row.get('nansen_flags') or []))
+        elif row.get('nansen_summary'):
+            print('    Nansen realise uniquement: $'+text(row['nansen_summary'].get('realized_pnl_usd'))+
+                  ' | positions ouvertes non encore verifiees; aucune autorite')
         print('    Blocages: '+', '.join(row['reason_not_paper_selected']))
         print('    Reserves paper: '+', '.join(row['paper_review_warnings'] or []))
         print('    Sources: Dune stale='+str(row['dune_stale'])+' Zerion stale='+str(row['zerion_stale'])+

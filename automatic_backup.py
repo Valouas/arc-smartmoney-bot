@@ -15,7 +15,8 @@ from atomic_json import write_json
 from process_lock import ProcessLock
 
 OWNER = 'arc_smartmoney_backups_v1'
-SOURCES = (Path('data/arc_bot.sqlite3'), Path('data/paper_copy.sqlite3'), Path('data/rpc_cache.sqlite3'))
+SOURCES = (Path('data/arc_bot.sqlite3'), Path('data/paper_copy.sqlite3'), Path('data/rpc_cache.sqlite3'),
+           Path('data/nansen_bulk.sqlite3'))
 STATUS = Path('data/backup_status.json')
 
 

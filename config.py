@@ -17,6 +17,8 @@ class Settings:
     external_discovery_enabled: bool = os.getenv('EXTERNAL_DISCOVERY_ENABLED', 'false').lower() == 'true'
     external_poll_seconds: int = _i('EXTERNAL_POLL_SECONDS', 900)
     nansen_api_key: str = field(default=os.getenv('NANSEN_API_KEY', ''), repr=False)
+    nansen_bulk_enabled: bool = os.getenv('NANSEN_BULK_ENABLED', 'false').lower() == 'true'
+    nansen_bulk_max_requests: int = _i('NANSEN_BULK_MAX_REQUESTS', 20000)
     dune_enabled: bool = os.getenv('DUNE_ENABLED', 'false').lower() == 'true'
     dune_api_key: str = field(default=os.getenv('DUNE_API_KEY', ''), repr=False)
     dune_query_id: str = os.getenv('DUNE_QUERY_ID', '').strip()

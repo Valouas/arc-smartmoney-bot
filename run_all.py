@@ -23,7 +23,7 @@ LOCK=Path('data/run_all.lock')
 STATE=Path('data/run_all_state.json')
 STOP=Path('data/run_all.stop')
 LOGS=Path('data/launcher_logs')
-ROLES=('launch_indexer','wallet_profiler','auto_discovery','bot','historical_analysis','alchemy_webhook','paper_copy','dashboard','automatic_backup','alchemy_sync','external_wallet_pipeline')
+ROLES=('launch_indexer','wallet_profiler','auto_discovery','bot','historical_analysis','alchemy_webhook','paper_copy','dashboard','automatic_backup','alchemy_sync','external_wallet_pipeline','nansen_bulk')
 
 
 def record_event(event, **details):
@@ -80,6 +80,7 @@ def roles_for(cfg):
         roles=['launch_indexer','auto_discovery']
     if cfg.historical_analysis_enabled: roles.append('historical_analysis')
     if getattr(cfg,'external_discovery_enabled',False): roles.append('external_wallet_pipeline')
+    if getattr(cfg,'nansen_bulk_enabled',False): roles.append('nansen_bulk')
     if cfg.alchemy_webhook_enabled: roles.append('alchemy_webhook')
     if cfg.alchemy_webhook_enabled and getattr(cfg,'alchemy_sync_enabled',False): roles.append('alchemy_sync')
     if not getattr(cfg,'paper_copy_paused',False): roles.append('paper_copy')
@@ -305,7 +306,7 @@ def supervise(cfg):
                 if p.poll() is None or role in warned: continue
                 warned.add(role)
                 record_event('child_exited',role=role,child_pid=p.pid,exit_code=p.poll())
-                if role in ('ngrok','alchemy_webhook','dashboard','alchemy_sync','external_wallet_pipeline'):
+                if role in ('ngrok','alchemy_webhook','dashboard','alchemy_sync','external_wallet_pipeline','nansen_bulk'):
                     print(role+' indisponible ; scanners RPC maintenus. Consulter son journal.',flush=True)
                 else:
                     reason='core_worker_exit'

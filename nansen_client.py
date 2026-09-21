@@ -87,7 +87,7 @@ class NansenHTTP:
                 raise ExternalError('nansen_deferred', self.state['retry_at']-self.clock())
             if self.state['attempts'] >= self.state['max_requests']: raise ExternalError('nansen_request_budget')
             remaining = self.state.get('credits_remaining')
-            if remaining is not None and remaining <= 5: raise ExternalError('nansen_credit_reserve')
+            if remaining is not None and remaining <= self.state.get('credit_reserve',5): raise ExternalError('nansen_credit_reserve')
             delay = max(0, self.next_request-self.clock())
             if delay: self.sleep(delay)
             self.next_request = self.clock()+.6  # <= 100/minute, including retries.

@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent
 HOST, PORT = '127.0.0.1', 8001
 COMPONENTS = ('launch_indexer', 'wallet_profiler', 'auto_discovery', 'bot',
-              'historical_analysis', 'alchemy_webhook', 'alchemy_sync', 'paper_copy', 'ngrok', 'dashboard')
+              'historical_analysis', 'alchemy_webhook', 'alchemy_sync', 'paper_copy', 'ngrok', 'dashboard', 'nansen_bulk')
 HISTORY_FIELDS = ('wallet', 'historical_class', 'analysis_status', 'metrics_status',
                   'buys', 'closed_positions', 'open_positions_count', 'conservative_pnl_usdc',
                   'conservative_return', 'identity_cluster_size', 'paper_review_eligible',
@@ -183,13 +183,14 @@ def process_snapshot(path, now):
 
 
 def snapshot(root=ROOT, now=None):
+    fixed_now = now
     now = time.time() if now is None else now
     data = {'at': now, 'errors': {}}
     for name, reader, path in (
         ('paper', paper_snapshot, 'data/paper_copy.sqlite3'),
         ('analysis', analysis_snapshot, 'data/arc_bot.sqlite3'),
         ('history', history_snapshot, 'data/historical_wallet_ranking.csv'),
-        ('processes', lambda p: process_snapshot(p, now), 'data/run_all_state.json'),
+        ('processes', lambda p: process_snapshot(p, time.time() if fixed_now is None else now), 'data/run_all_state.json'),
     ):
         try:
             data[name] = reader(root / path)
@@ -199,6 +200,19 @@ def snapshot(root=ROOT, now=None):
         except (OSError, sqlite3.Error, csv.Error, ValueError, TypeError, KeyError, ArithmeticError):
             data[name] = None
             data['errors'][name] = 'UNAVAILABLE'
+    path = root / 'data/nansen_bulk_status.json'
+    data['nansen'] = None
+    if path.exists():
+        try:
+            value = json.loads(path.read_text(encoding='utf-8'))
+            fields = ('status','total','summaries','details','errors','excluded','attempts',
+                      'max_requests','credits_remaining','credit_reserve','updated_at')
+            data['nansen'] = {k:value.get(k) for k in fields}
+            # Other panels can take time to read while this worker keeps publishing.
+            observed_now = time.time() if fixed_now is None else now
+            data['nansen']['fresh'] = 0 <= observed_now-value['updated_at'] <= 90
+        except (OSError,ValueError,TypeError,KeyError):
+            data['errors']['nansen'] = 'UNAVAILABLE'
     return data
 
 
