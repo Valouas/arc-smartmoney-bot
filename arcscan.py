@@ -83,6 +83,8 @@ class ArcscanClient:
                                 isinstance(data, dict) and (data.get("error") or data.get("truncated"))):
                             category = "invalid_payload"
                         else:
+                            from data_preservation import archive_api_response
+                            archive_api_response('arcscan',path,params,data)
                             return data
             except requests.Timeout:
                 category, retryable = "timeout", True

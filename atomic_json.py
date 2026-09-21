@@ -20,6 +20,8 @@ def atomic_text(path, *, encoding='utf-8', newline=None):
             yield f
             f.flush()
             os.fsync(f.fileno())
+        from data_preservation import before_replace
+        before_replace(path,name)
         for attempt in range(3):
             try:
                 os.replace(name, path)

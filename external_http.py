@@ -143,6 +143,8 @@ class ExternalHTTP:
                         except (ValueError, UnicodeError, RecursionError):
                             raise ExternalError('invalid_json') from None
                         if not isinstance(data, dict): raise ExternalError('invalid_schema')
+                        from data_preservation import archive_api_response
+                        archive_api_response(self.provider,path,params,data)
                         return data
             except requests.Timeout: category = 'timeout'
             except requests.ConnectionError: category = 'connection'

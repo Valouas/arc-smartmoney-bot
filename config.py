@@ -41,6 +41,7 @@ class Settings:
     rpc_cache_file: str = os.getenv('ARC_RPC_CACHE_FILE','data/rpc_cache.sqlite3')
     scanner_log_window_blocks: int = _i('SCANNER_LOG_WINDOW_BLOCKS',10)
     automatic_backup_enabled: bool = os.getenv('AUTOMATIC_BACKUP_ENABLED', 'true').lower() == 'true'
+    automatic_backup_keep_all: bool = os.getenv('AUTOMATIC_BACKUP_KEEP_ALL', 'true').lower() == 'true'
     automatic_backup_directory: str = os.getenv('AUTOMATIC_BACKUP_DIRECTORY', 'data/automatic_backups')
     automatic_backup_interval_seconds: int = _i('AUTOMATIC_BACKUP_INTERVAL_SECONDS', 3600)
     automatic_backup_keep_last: int = _i('AUTOMATIC_BACKUP_KEEP_LAST', 24)

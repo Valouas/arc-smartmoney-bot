@@ -16,6 +16,7 @@ def setup(tmp_path,monkeypatch):
     monkeypatch.chdir(tmp_path)
     Path('data').mkdir()
     cfg=SimpleNamespace(automatic_backup_enabled=True,automatic_backup_directory='data/automatic_backups',
+                        automatic_backup_keep_all=False,
                         automatic_backup_keep_last=2,automatic_backup_keep_daily=2,
                         automatic_backup_timeout_seconds=10,automatic_backup_reserve_mb=0,
                         automatic_backup_interval_seconds=3600,automatic_backup_max_age_seconds=10800)
@@ -77,6 +78,27 @@ def test_retention_keeps_recent_and_daily_and_never_removes_user_evidence(setup)
     assert kept=={made[3],made[4],made[5]}
     assert (evidence/'precious.txt').read_text()=='keep'
     assert (forensic/'old.sqlite3').read_bytes()==b'keep'
+
+
+def test_keep_all_never_prunes_any_verified_generation(setup):
+    cfg,_=setup;cfg.automatic_backup_keep_all=True
+    made=[backup.create_backup(cfg,now=t*86400) for t in range(1,8)]
+    assert {p for p,_ in backup.generations(cfg.automatic_backup_directory)}==set(made)
+
+
+def test_backup_copies_evidence_blobs_and_detects_missing_or_corrupt_copy(setup,tmp_path):
+    from data_preservation import archive_file
+    cfg,_=setup;cfg.automatic_backup_keep_all=True
+    source=Path('data/provider.json');source.write_text('{"wallets":12}')
+    key=archive_file(source,root=tmp_path)
+    generation=backup.create_backup(cfg)
+    manifest=backup.verify_backup(generation)
+    assert manifest['evidence_blobs']==1 and 'catalog.sqlite3' in manifest['files']
+    original=Path('data/evidence_archive/blobs')/(key+'.gz')
+    copied=Path(cfg.automatic_backup_directory)/'evidence_blobs'/(key+'.gz')
+    assert copied.read_bytes()==original.read_bytes()
+    copied.write_bytes(b'corrupt')
+    with pytest.raises((ValueError,OSError)):backup.verify_backup(generation)
 
 
 def test_extra_user_file_prevents_retention_delete(setup):

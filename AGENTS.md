@@ -31,6 +31,14 @@ Before adding features, perform a complete V4 audit:
 - Never print Telegram tokens or other credentials.
 - Use `.env.example` for variable names only.
 
+## Mandatory data preservation (owner request)
+- Preserve all collected evidence, paid API responses, decoded history and backups.
+- Never reset/delete data, caches or backup generations to fix a runtime problem.
+- Before replacing data, retain its prior version in the evidence archives.
+- Keep `AUTOMATIC_BACKUP_KEEP_ALL=true`; no pruning without explicit owner approval.
+- Archival copies are research evidence only: never restore them into scoring or
+  live authority automatically. Verify recovery on a separate copy first.
+
 ## Development
 - Python 3.10+
 - Keep modules small and typed where practical.
