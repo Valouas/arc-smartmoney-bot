@@ -208,6 +208,32 @@ def test_frequency_boundary_inclusive(count,status):
     assert f['frequency_status']==status
 
 
+def test_roi_weighted_capital_and_no_double_count_of_open_view():
+    rows=[position(1,10,cost=1000,holding=1,latent=100),position(2,0,cost=10)]
+    r=score(payload(rows,[rows[0]]),W)
+    assert r['total_buy_usd']==1010
+    assert r['roi_pct']==pytest.approx(100*8990/1010)
+    assert r['capital_multiple']==pytest.approx(1+8990/1010)
+
+
+@pytest.mark.parametrize('rows', [[],[position(1,cost=0)]])
+def test_roi_missing_sample_or_zero_cost_not_invented(rows):
+    r=score(payload(rows),W)
+    assert r['roi_pct'] is None and r['capital_multiple'] is None
+
+
+def test_partial_roi_never_uses_only_winners():
+    r=score(payload([position(1,10),position(2,cost=0)]),W)
+    assert r['roi_pct'] is None
+
+
+def test_roi_includes_open_loss_and_does_not_change_score():
+    closed=position(1,1.5,cost=100)
+    opened=position(2,.1,cost=100,holding=1,latent=-90)
+    r=score(payload([closed],[opened]),W)
+    assert r['roi_pct']==-20 and r['capital_multiple']==.8
+
+
 @pytest.mark.parametrize('count', [None, -1, True, 1.5, float('inf'), '100'])
 def test_unknown_operation_count_not_treated_as_zero(count):
     p=payload();p['summary']['traded_times']=count

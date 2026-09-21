@@ -111,7 +111,7 @@ def score(payload, wallet):
         if not math.isfinite(multiple) or not math.isfinite(pnl):
             omitted.append({'token': token, 'reason': 'non_finite_outcome'})
             continue
-        outcomes.append({'token': token, 'multiple': multiple, 'pnl': pnl})
+        outcomes.append({'token': token, 'multiple': multiple, 'pnl': pnl, 'bought_usd': cost})
     n = len(outcomes)
     wins = sum(r['pnl'] > 0 for r in outcomes)
     positives = [r['pnl'] for r in outcomes if r['pnl'] > 0]
@@ -122,10 +122,19 @@ def score(payload, wallet):
     raw_score = (100 * (.5*lower + .2*wilson(counts['x2'], n)
                       + .2*wilson(counts['x5'], n) + .1*wilson(counts['x10'], n))
                  * (1 - .5*concentration)) if n else None
+    # Same deduplicated token scope as outcomes, including latent losses.
+    # Not ROI on account equity: reinvested capital can be counted on each buy.
+    bought = sum(r['bought_usd'] for r in outcomes)
+    total_pnl = sum(r['pnl'] for r in outcomes)
+    complete_roi = (not omitted and n > 0 and number(bought) and bought > 0
+                    and number(total_pnl) and number(100 * (total_pnl / bought)))
+    roi = 100 * (total_pnl / bought) if complete_roi else None
     return dict(status='PARTIAL_POSITION_DATA' if omitted else ('AVAILABLE' if n else 'NO_EVALUABLE_POSITIONS'),
                 historical_copy_score=raw_score if not omitted else None,
                 sample_size=n, excluded_positions=omitted, **counts,
                 wilson=lower, win_rate=wins/n if n else None, concentration=concentration,
+                roi_pct=roi, capital_multiple=1+roi/100 if roi is not None else None,
+                total_buy_usd=bought if complete_roi else None,
                 pnl_informative=payload.get('metrics'), date=payload.get('date'),
                 source_flags=payload.get('flags', []))
 
@@ -204,13 +213,13 @@ def main(argv=None):
           f"{result['wallets_missing_stored_detail']} sans details exploitables")
     print(f"Plafond: {maximum:g} operations/jour en moyenne | {result['wallets_excluded_frequency']} exclus pour frequence | "
           f"{result['wallets_unknown_frequency']} frequence inconnue | {result['copy_research_candidates']} candidats audit copy")
-    print('wallet                                      score   x2/x5/x10  Wilson  win%   n  concentration  PnL USD(info) status')
+    print('wallet                                      score   x2/x5/x10  ROI%  multiple  Wilson  win%   n  concentration  PnL USD(info) status')
     for r in result['rows'][:args.top]:
         fmt = lambda k, pct=False: '-' if r.get(k) is None else f"{r[k]*(100 if pct else 1):.2f}"
         counts = '/'.join(str(r.get(f'x{x}', '-')) for x in (2, 5, 10))
         pnl = (r.get('pnl_informative') or {}).get('total_gain')
         pnl_text = f'{pnl:.2f}' if number(pnl) else '-'
-        print(f"{r['wallet']}  {fmt('historical_copy_score'):>6}  {counts:>10}  {fmt('wilson', True):>6}  "
+        print(f"{r['wallet']}  {fmt('historical_copy_score'):>6}  {counts:>10}  {fmt('roi_pct'):>8}  {fmt('capital_multiple'):>8}x  {fmt('wilson', True):>6}  "
               f"{fmt('win_rate', True):>6} {r.get('sample_size', '-'):>3}  {fmt('concentration', True):>6}%  {pnl_text:>13} {r['status']}")
         print(f"  Operations: {r['operations']} | jours: {fmt('observation_days')} | op/j: {fmt('operations_per_day')} | {r['frequency_status']}")
         if r.get('excluded_positions'):

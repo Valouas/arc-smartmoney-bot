@@ -60,6 +60,12 @@ token, both components come from that row. Bought USD is the total observed buy
 cost, counted once. Conflicting overlapping costs/realized PnLs are flagged.
 
 `multiple = 1 + (realized_pnl + unrealized_pnl) / bought_usd`.
+Wallet `roi_pct = 100 * sum(realized_pnl + unrealized_pnl) / sum(bought_usd)`
+over the same deduplicated positions; `capital_multiple = 1 + roi_pct / 100`.
+Costs are counted once across views. No wallet ROI is displayed for a partial,
+empty or invalid-cost sample. This is a return on cumulative purchases, not on
+initial wallet equity (reinvested funds may be counted on multiple buys), not
+annualized and not a simulated copy return. ROI does not affect score or authority.
 Counts x2/x5/x10 mean **at least** that multiple, including current latent losses.
 These are provider-accounting outcomes, not achievable copy returns or proof
 that a wallet bought before a token's all-time x10. Win rate = positive total
