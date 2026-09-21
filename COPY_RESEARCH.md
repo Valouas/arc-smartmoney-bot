@@ -8,7 +8,7 @@ Run from the repository directory:
 ```
 
 Edit `data/copy_research_shortlist.json` to add/remove addresses. At the owner's
-request the list now contains 50 wallets, preserving all 15 originally supplied.
+request the first expansion contained 50 wallets, preserving all 15 originally supplied.
 The 35 additions were selected once from the existing frozen Nansen report,
 alternating descending realized PnL, realized ROI, and winning-token count.
 Only positive realized and total PnL with stored complete pages were considered
@@ -17,7 +17,9 @@ trade count. These are research leads, not a claim of robust copy performance.
 No new x2/x5/x10 score was computed for the full universe to make this selection.
 Selection provenance and the previous list are retained under
 `data/evidence_archives/copy_research_shortlist/`. No automatic expansion occurs.
-50 is the current list size, not a hard limit in the module.
+After the subsequent request for 30 additional funded candidates, the research
+list contains 80 wallets. The prior 50 are archived and retained in the list;
+only the 30 new confirmed candidates are appended. There is no hard size limit.
 Duplicate/case variants are normalized in memory only.
 Missing details stay in the list as `MISSING_NANSEN_DETAIL`. Invalid latest
 details are `INVALID_NANSEN_DETAIL`; no older snapshot or summary substitutes.
@@ -108,3 +110,59 @@ Counters printed by the report refer only to this offline scoring invocation.
 They are not account-wide billing counters for any independent running service.
 `Wallets scored` counts numeric scores; missing detail counts absent or invalid
 stored detailed payloads. Partial position data may be available but unscored.
+
+## Explicit current-funds check (separate from offline scoring)
+
+`copy_funds_check.py` accepts an already scored, ordered JSON array and checks
+at most 120 candidates by default, stopping at 30 wallets with at least $10 in
+observed USDC plus valued known tokens (`--minimum-usd 10`). It uses
+only the public Arc RPC, at one request/second through the existing retry and
+chain-verification transport. It does not use Alchemy or Nansen credentials.
+This is a manual action: the offline report never imports or invokes it. For a
+wallet with less than 10 USDC, up to 20 known token addresses from its already
+stored positions are checked, prioritizing previously valued holdings. Token
+quantities and decimals are read on-chain; current public DEX Screener quotes
+must match Arc and the exact base-token address and have positive liquidity.
+The deepest quoted pair is used. This is mark-to-market evidence, not proof of
+sellability or an executable liquidation value. Token checks stop when the
+minimum is established; not every asset or chain is inventoried.
+
+Chain ID must be 5042. The USDC predeploy is
+`0x3600000000000000000000000000000000000000`; its decimals must be 6. The balance
+is obtained with `eth_call balanceOf` at one recent block (maximum age 5 minutes
+at start), with the block hash rechecked at the end. Arc's native and ERC-20 USDC
+are the same balance and must never be added together. Reference:
+https://www.arc.io/blog/supporting-arc-in-wallets-one-balance-usdc-fees-and-complete-history
+
+Raw accepted responses and wallet observations are flushed to a new append-only
+JSONL file. A new final JSON file is created only on completion; neither file is
+overwritten. Wrong chain, stale blocks, malformed balances or reorgs cannot
+confirm funds. A failed read is UNKNOWN, never zero. A zero USDC balance does not
+prove a zero portfolio: the wallet may hold tokens or positions. Below $10 in the
+observed subset means `BELOW_MINIMUM_OBSERVED_PORTFOLIO_INCOMPLETE`, not an empty
+wallet. Positive dust alone cannot pass. Token-only or mixed holdings can pass.
+USDC and its native mirror are excluded from the token loop to avoid double counting.
+All price payloads and successful raw balance responses are archived. Evidence is dated and
+can become stale immediately; it confers no engine/paper/live authority.
+
+Example (explicit RPC network access, no Nansen requests):
+
+```powershell
+.\.venv\Scripts\python.exe copy_funds_check.py --candidates outputs/candidates.json --output data/new_funds_evidence.json --target 30 --maximum 120 --minimum-usd 10
+```
+
+For the owner's request for 30 additional wallets, a separate persisted research
+pool of 240 new addresses was selected from the existing frozen report, excluding
+the previous 50 and reviewed infrastructure. Preselection used positive total
+and realized PnL, reported realized ROI >=20%, and <=50 operations/day, alternating
+winning-token count, win rate and reported realized ROI. Only these 240 stored
+detailed payloads were rescored offline: 120 were calculable and passed total ROI
+and frequency criteria. This is a bounded shortlist search, not a claim of the
+global top 30 across every stored wallet. The pool, its provenance, scores and
+balance evidence are retained separately; no Nansen refresh or bulk rescan occurs.
+59 of those candidates were checked to establish 30 with observed value >=$10;
+5 of the 30 required token valuations to reach the minimum. The previous 9
+candidates were also checked: 6 reached the minimum, 3 were not confirmed.
+The dated funded-review file/report is separate from the general offline score
+report: the latter's eligibility flag still refers to ROI/frequency/data quality,
+not a fresh balance guarantee. No funded-review file is consumed by the engine.
