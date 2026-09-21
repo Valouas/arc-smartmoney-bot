@@ -120,8 +120,25 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--status',action='store_true')
     parser.add_argument('--once',action='store_true')
+    parser.add_argument('--resume-after-topup',type=int,metavar='CUMULATIVE_MAX',
+                        help='Explicit credit recharge; archive state and extend the cumulative cap, no HTTP calls')
     args=parser.parse_args(argv)
     try:
+        if args.resume_after_topup is not None:
+            if args.once or args.status or args.resume_after_topup!=SETTINGS.nansen_bulk_max_requests:
+                raise ExternalError('nansen_resume_configuration_mismatch')
+            from automatic_backup import backup_database
+            import uuid
+            with ProcessLock('data/nansen_audit.lock'), closing(Campaign('data/nansen_bulk.sqlite3')) as queue:
+                folder=Path('data/nansen_budget_backups');folder.mkdir(parents=True,exist_ok=True)
+                target=folder/('before_topup_'+uuid.uuid4().hex+'.sqlite3')
+                verification=backup_database(Path('data/nansen_bulk.sqlite3'),target,120)
+                write_json(target.with_suffix('.json'),verification)
+                queue.resume_after_topup(args.resume_after_topup)
+                write_json(STATUS,queue.progress())
+                print('Reprise preparee : plafond cumule '+str(args.resume_after_topup)+
+                      ', compteurs et cache conserves. Aucun appel API effectue.')
+            return 0
         if args.status:
             print(STATUS.read_text(encoding='utf-8') if STATUS.exists() else 'No Nansen campaign started.'); return 0
         return run(once=args.once)

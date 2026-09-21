@@ -41,6 +41,24 @@ separement : pas de reecriture d'un enorme JSON a chaque requete. Cette base est
 incluse dans les sauvegardes SQLite automatiques. Ne pas la supprimer ni la renommer
 pour relancer : cela perdrait le budget cumule et les pages reutilisables.
 
+### Reprise explicite apres recharge
+
+Une recharge ne change pas automatiquement le plafond local. Arreter le lanceur,
+fixer `NANSEN_BULK_MAX_REQUESTS=25000` dans `.env`, puis executer :
+
+```powershell
+.\.venv\Scripts\python.exe nansen_bulk.py --resume-after-topup 25000
+```
+
+Cette commande exige une campagne arretee sur budget, prend le verrou exclusif,
+sauvegarde la base avec verification dans `data/nansen_budget_backups`, et conserve
+l'ancien etat dans `budget_extensions`. Aucun appel reseau n'est fait. Le plafond
+est **cumule**, les tentatives deja utilisees ne sont jamais remises a zero.
+Les wallets, la periode, les resultats, le cache et la reserve restent inchanges.
+Le solde sera revalide par les en-tetes de la premiere nouvelle reponse apres
+relancement du lanceur. Un blocage de schema ou de facturation ne peut pas etre
+efface par cette commande. La limite maximale de cet outil reste 25 000.
+
 Les resumes sont importes sous `nansen_summary`, avec positions ouvertes non
 verifiees et aucune autorite. Seuls les dossiers dont les deux vues sont entierement
 recues sont importes sous `nansen`, toujours comme recherche externe non validee.

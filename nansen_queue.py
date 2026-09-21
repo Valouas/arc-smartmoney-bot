@@ -87,6 +87,28 @@ class Campaign:
             self.db.execute('UPDATE campaign SET payload=? WHERE id=1',
                 (json.dumps({k:v for k,v in self.state.items() if k!='cache'},allow_nan=False),))
 
+    def resume_after_topup(self, max_requests):
+        """Explicit operator action under the campaign process lock, never automatic."""
+        if (not self.state or self.state.get('status')!='BUDGET_STOP'
+                or self.state.get('halt')
+                or self.state.get('last_error') not in ('nansen_credit_reserve','nansen_request_budget')):
+            raise ExternalError('nansen_campaign_not_budget_stopped')
+        if (type(max_requests) is not int or not self.state['max_requests']<max_requests<=25000
+                or max_requests<=self.state['attempts']):
+            raise ExternalError('invalid_nansen_campaign_budget')
+        prior={k:v for k,v in self.state.items() if k!='cache'}
+        with self.db:
+            self.db.execute('CREATE TABLE IF NOT EXISTS budget_extensions('
+                'id INTEGER PRIMARY KEY,at INTEGER NOT NULL,prior_state TEXT NOT NULL,new_max INTEGER NOT NULL)')
+            self.db.execute('INSERT INTO budget_extensions(at,prior_state,new_max) VALUES(?,?,?)',
+                            (int(time.time()),json.dumps(prior,allow_nan=False),max_requests))
+            new={**prior,'max_requests':max_requests,'credits_remaining':None,'status':'PREPARED'}
+            new.pop('last_error',None)
+            self.db.execute('UPDATE campaign SET payload=? WHERE id=1',(json.dumps(new,allow_nan=False),))
+        # Unknown until the first new response verifies the provider's balance.
+        # Attempts, billed usage, scope, jobs and cached responses never reset.
+        self.state={**new,'cache':self.state['cache']}
+
     def save_summary(self, wallet, payload):
         with self.db:
             self.db.execute('UPDATE jobs SET summary=?,realized=?,error=NULL,next_at=0 WHERE wallet=?',

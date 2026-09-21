@@ -33,6 +33,44 @@ def transport(q,session=None):
     return NansenHTTP('dummy',q.state,q.persist,session or Mock(),sleep=Mock())
 
 
+def test_explicit_topup_preserves_cache_counters_and_verifies_new_balance(tmp_path):
+    path=tmp_path/'queue.sqlite3'
+    body={'chain':'arc','address':W,'date':DATE}
+    with closing(queue_at(path)) as q:
+        q.state.update(status='BUDGET_STOP',attempts=19933,credits_remaining=100,
+                       credits_used_observed=19918,last_error='nansen_credit_reserve')
+        q.state['cache'][digest([SUMMARY,body])]={'response':overview()}
+        q.persist()
+        q.resume_after_topup(25000)
+        session=Mock();session.post.return_value=response(**{'X-Nansen-Credits-Remaining':'40099'})
+        h=transport(q,session)
+        assert h.post(SUMMARY,body)==overview()
+        session.post.assert_not_called()
+        h.post(SUMMARY,{**body,'address':W2})
+        assert q.state['credits_remaining']==40099 and q.state['attempts']==19934
+        prior=json.loads(q.db.execute('SELECT prior_state FROM budget_extensions').fetchone()[0])
+        assert prior['credits_remaining']==100 and prior['credits_used_observed']==19918
+    with closing(Campaign(path)) as q:
+        assert q.state['max_requests']==25000 and q.state['attempts']==19934
+        assert q.state['credit_reserve']==100 and q.state['date']==DATE
+        assert q.progress()['total']==2 and digest([SUMMARY,body]) in q.state['cache']
+
+
+@pytest.mark.parametrize('cap',[20000,19900,25001])
+def test_topup_rejects_invalid_cap_without_changing_state(tmp_path,cap):
+    with closing(queue_at(tmp_path/'queue.sqlite3')) as q:
+        q.state.update(status='BUDGET_STOP',last_error='nansen_request_budget')
+        with pytest.raises(ExternalError):q.resume_after_topup(cap)
+        assert q.state['max_requests']==20000
+
+
+def test_topup_cannot_bypass_schema_or_billing_halt(tmp_path):
+    with closing(queue_at(tmp_path/'queue.sqlite3')) as q:
+        q.state.update(status='BUDGET_STOP',last_error='nansen_credit_reserve',halt='nansen_billing_unverified')
+        with pytest.raises(ExternalError):q.resume_after_topup(25000)
+        assert q.state['halt']=='nansen_billing_unverified'
+
+
 def test_summaries_all_before_details_no_authority_and_negative_wallet_kept(local,tmp_path):
     with closing(queue_at(tmp_path/'queue.sqlite3')) as q,closing(ExternalStore(local.path)) as store:
         session=Mock();session.post.side_effect=[response(),response(overview(realized_pnl_usd=-500)),
