@@ -139,9 +139,11 @@ def score(payload, wallet):
                 source_flags=payload.get('flags', []))
 
 
-def report(db_path, shortlist_path, excluded=(), max_operations_per_day=50):
+def report(db_path, shortlist_path, excluded=(), max_operations_per_day=50, min_roi_pct=20):
     if not number(max_operations_per_day) or max_operations_per_day <= 0:
         raise ValueError('invalid_max_operations_per_day')
+    if not number(min_roi_pct):
+        raise ValueError('invalid_min_roi_pct')
     wallets = shortlist(shortlist_path)
     rows = []
     # mode=ro and query_only prohibit migrations, checkpoints and authority changes.
@@ -168,8 +170,13 @@ def report(db_path, shortlist_path, excluded=(), max_operations_per_day=50):
                     row['status'] = 'INVALID_NANSEN_DETAIL'
             if wallet in excluded:
                 row.update(status='EXCLUDED_INFRASTRUCTURE', historical_copy_score=None)
+            roi = row.get('roi_pct')
+            row['min_roi_pct'] = min_roi_pct
+            row['roi_status'] = ('UNKNOWN_ROI' if not number(roi) else
+                                 'EXCLUDED_LOW_ROI' if roi < min_roi_pct else 'WITHIN_ROI_LIMIT')
             row['copy_research_eligible'] = (row['historical_copy_score'] is not None
-                                            and row['frequency_status'] == 'WITHIN_FREQUENCY_LIMIT')
+                                            and row['frequency_status'] == 'WITHIN_FREQUENCY_LIMIT'
+                                            and row['roi_status'] == 'WITHIN_ROI_LIMIT')
             rows.append(row)
     rows.sort(key=lambda r: (not r['copy_research_eligible'],
                             r['frequency_status'] != 'WITHIN_FREQUENCY_LIMIT',
@@ -181,6 +188,8 @@ def report(db_path, shortlist_path, excluded=(), max_operations_per_day=50):
             'wallets_scored': sum(r['historical_copy_score'] is not None for r in rows),
             'wallets_excluded_frequency': sum(r['frequency_status'] == 'EXCLUDED_FREQUENCY' for r in rows),
             'wallets_unknown_frequency': sum(r['frequency_status'] == 'UNKNOWN_FREQUENCY' for r in rows),
+            'wallets_excluded_low_roi': sum(r['roi_status'] == 'EXCLUDED_LOW_ROI' for r in rows),
+            'wallets_unknown_roi': sum(r['roi_status'] == 'UNKNOWN_ROI' for r in rows),
             'copy_research_candidates': sum(r['copy_research_eligible'] for r in rows),
             'nansen_http_calls': 0, 'nansen_credits_consumed': 0, 'rows': rows}
 
@@ -204,7 +213,13 @@ def main(argv=None):
             raise ValueError()
     except ValueError:
         parser.error('COPY_MAX_OPERATIONS_PER_DAY must be finite and positive')
-    result = report(args.db, args.shortlist, infrastructure_addresses(), maximum)
+    try:
+        minimum_roi = float(os.getenv('COPY_MIN_ROI_PCT', '20'))
+        if not number(minimum_roi):
+            raise ValueError()
+    except ValueError:
+        parser.error('COPY_MIN_ROI_PCT must be finite')
+    result = report(args.db, args.shortlist, infrastructure_addresses(), maximum, minimum_roi)
     if args.json:
         print(json.dumps(result, ensure_ascii=True, allow_nan=False, indent=2))
         return
@@ -213,6 +228,7 @@ def main(argv=None):
           f"{result['wallets_missing_stored_detail']} sans details exploitables")
     print(f"Plafond: {maximum:g} operations/jour en moyenne | {result['wallets_excluded_frequency']} exclus pour frequence | "
           f"{result['wallets_unknown_frequency']} frequence inconnue | {result['copy_research_candidates']} candidats audit copy")
+    print(f"ROI minimum: {minimum_roi:g}% | {result['wallets_excluded_low_roi']} exclus pour ROI | {result['wallets_unknown_roi']} ROI inconnu")
     print('wallet                                      score   x2/x5/x10  ROI%  multiple  Wilson  win%   n  concentration  PnL USD(info) status')
     for r in result['rows'][:args.top]:
         fmt = lambda k, pct=False: '-' if r.get(k) is None else f"{r[k]*(100 if pct else 1):.2f}"
@@ -221,7 +237,7 @@ def main(argv=None):
         pnl_text = f'{pnl:.2f}' if number(pnl) else '-'
         print(f"{r['wallet']}  {fmt('historical_copy_score'):>6}  {counts:>10}  {fmt('roi_pct'):>8}  {fmt('capital_multiple'):>8}x  {fmt('wilson', True):>6}  "
               f"{fmt('win_rate', True):>6} {r.get('sample_size', '-'):>3}  {fmt('concentration', True):>6}%  {pnl_text:>13} {r['status']}")
-        print(f"  Operations: {r['operations']} | jours: {fmt('observation_days')} | op/j: {fmt('operations_per_day')} | {r['frequency_status']}")
+        print(f"  Operations: {r['operations']} | jours: {fmt('observation_days')} | op/j: {fmt('operations_per_day')} | {r['frequency_status']} | {r['roi_status']}")
         if r.get('excluded_positions'):
             reasons = sorted({p['reason'] for p in r['excluded_positions']})
             print(f"  {len(r['excluded_positions'])} positions non evaluables: {', '.join(reasons)}")

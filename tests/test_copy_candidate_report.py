@@ -267,3 +267,35 @@ def test_exclusion_preserves_shortlist_pnl_score_and_authority(stored):
     assert result['wallets_excluded_frequency']==1
     assert (db.read_bytes(),path.read_bytes())==before
     assert report(db,path,max_operations_per_day=100000)['copy_research_candidates']==1
+
+
+@pytest.mark.parametrize('roi,eligible', [(19.999,False),(20,True),(20.001,True),(-10,False)])
+def test_copy_roi_threshold_inclusive_and_preserves_data(stored,roi,eligible):
+    db,path=stored
+    p=payload();p['positions']['realized'][0]['pnl_usd_realised']=roi
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE external_wallet_metrics SET payload=? WHERE wallet=? AND provider='nansen'",(json.dumps(p),W))
+    before=db.read_bytes(),path.read_bytes()
+    result=report(db,path)
+    r=next(r for r in result['rows'] if r['wallet']==W)
+    assert r['copy_research_eligible'] is eligible
+    assert r['roi_status']==('WITHIN_ROI_LIMIT' if eligible else 'EXCLUDED_LOW_ROI')
+    assert r['historical_copy_score'] is not None
+    assert not r['paper_selected'] and not r['live_signal_authority']
+    assert (db.read_bytes(),path.read_bytes())==before
+    assert report(db,path,min_roi_pct=-100)['copy_research_candidates']==1
+
+
+def test_unknown_roi_never_passes_minimum(stored):
+    db,path=stored
+    p=payload([position(1,cost=0)])
+    with sqlite3.connect(db) as con:
+        con.execute("UPDATE external_wallet_metrics SET payload=? WHERE wallet=? AND provider='nansen'",(json.dumps(p),W))
+    r=next(r for r in report(db,path)['rows'] if r['wallet']==W)
+    assert r['roi_status']=='UNKNOWN_ROI' and not r['copy_research_eligible']
+
+
+@pytest.mark.parametrize('value',[float('nan'),float('inf'),None,True])
+def test_invalid_roi_config_rejected(stored,value):
+    with pytest.raises(ValueError,match='invalid_min_roi_pct'):
+        report(*stored,min_roi_pct=value)

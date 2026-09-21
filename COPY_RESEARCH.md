@@ -52,6 +52,14 @@ execution are unchanged. No provider calls or SQLite writes are needed.
 
 ## Position score
 
+Owner-approved copy research minimum: `COPY_MIN_ROI_PCT=20`. A total ROI below
+20% produces `EXCLUDED_LOW_ROI`; exactly 20% passes. Missing/partial ROI remains
+`UNKNOWN_ROI`, never an assumed zero or eligibility. Only scored wallets that
+pass both frequency and ROI criteria have `copy_research_eligible=true`.
+Historical scores and all evidence are retained. These research-only exclusions
+do not modify engine thresholds, paper admission or live authority. Exclusion
+counters can overlap (a wallet may fail both frequency and ROI).
+
 One observation is one distinct token position over the provider's stored date
 range, **not one purchase, one closed trade or the token's peak price**. The two
 views are deduplicated by token. Realized PnL comes from the realized view when
@@ -65,7 +73,8 @@ over the same deduplicated positions; `capital_multiple = 1 + roi_pct / 100`.
 Costs are counted once across views. No wallet ROI is displayed for a partial,
 empty or invalid-cost sample. This is a return on cumulative purchases, not on
 initial wallet equity (reinvested funds may be counted on multiple buys), not
-annualized and not a simulated copy return. ROI does not affect score or authority.
+annualized and not a simulated copy return. ROI filters research eligibility only;
+it does not affect the score formula or engine authority.
 Counts x2/x5/x10 mean **at least** that multiple, including current latent losses.
 These are provider-accounting outcomes, not achievable copy returns or proof
 that a wallet bought before a token's all-time x10. Win rate = positive total
