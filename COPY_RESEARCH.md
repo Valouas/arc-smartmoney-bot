@@ -7,9 +7,18 @@ Run from the repository directory:
 .\.venv\Scripts\python.exe copy_candidate_report.py --json
 ```
 
-Edit `data/copy_research_shortlist.json` to add/remove addresses. The initial
-list is exactly the 15 addresses explicitly supplied by the owner; no bulk
-selection is inferred. Duplicate/case variants are normalized in memory only.
+Edit `data/copy_research_shortlist.json` to add/remove addresses. At the owner's
+request the list now contains 50 wallets, preserving all 15 originally supplied.
+The 35 additions were selected once from the existing frozen Nansen report,
+alternating descending realized PnL, realized ROI, and winning-token count.
+Only positive realized and total PnL with stored complete pages were considered
+for these additions; reviewed infrastructure was excluded. There is no minimum
+trade count. These are research leads, not a claim of robust copy performance.
+No new x2/x5/x10 score was computed for the full universe to make this selection.
+Selection provenance and the previous list are retained under
+`data/evidence_archives/copy_research_shortlist/`. No automatic expansion occurs.
+50 is the current list size, not a hard limit in the module.
+Duplicate/case variants are normalized in memory only.
 Missing details stay in the list as `MISSING_NANSEN_DETAIL`. Invalid latest
 details are `INVALID_NANSEN_DETAIL`; no older snapshot or summary substitutes.
 The file is never rewritten by the report.

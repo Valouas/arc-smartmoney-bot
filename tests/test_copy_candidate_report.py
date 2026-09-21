@@ -61,6 +61,11 @@ def test_only_shortlist_latest_detail_no_summary_fallback_or_writes(stored):
 
 def test_actual_cli_top20_has_no_network_or_provider_imports(stored):
     db, path = stored
+    # A display of 20 must still analyze the full 50-wallet shortlist, never
+    # expand to non-shortlisted rows or fetch missing details.
+    selected = [W, MISSING] + ['0x'+f'{i:040x}' for i in range(100, 148)]
+    path.write_text(json.dumps(dict(schema_version=1, purpose='copy_research_shortlist',
+                                   wallets=selected)), encoding='utf-8')
     code = '''
 import sys, runpy, socket, builtins
 def audit(event, args):
@@ -82,6 +87,9 @@ runpy.run_path('copy_candidate_report.py', run_name='__main__')
     assert proc.returncode == 0, proc.stderr
     assert 'Nansen HTTP calls during scoring: 0' in proc.stdout
     assert 'Nansen credits consumed: 0' in proc.stdout
+    assert '50 wallets analyses' in proc.stdout
+    assert 'Wallets missing stored detail: 49' in proc.stdout
+    assert len([line for line in proc.stdout.splitlines() if line.startswith('0x')]) == 20
     assert OTHER not in proc.stdout
 
 
