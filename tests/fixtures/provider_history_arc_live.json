@@ -1,0 +1,31 @@
+{
+  "wallet": "0x1f1f1c9f75fc95caf63587d28fe533bd94d7ea7e",
+  "local_transaction": {
+    "tx_hash": "0x63a1d55b774ae036c8835b25779a3d179c5a371f84d7c61a04165ced1c9d9a5f",
+    "block": 21492961,
+    "index": 11,
+    "timestamp": 1789731922,
+    "gas_usdc": "0.005461914146446665",
+    "trades": [
+      {
+        "side": "BUY",
+        "token": "0x8faaE5592b9acC27a79Fca745c6B872adF514a5d",
+        "symbol": "MURMUR",
+        "token_amount": 386829.1680335633,
+        "usdc_amount": 85.0,
+        "confirmation_eligible": true
+      }
+    ],
+    "inventory_gap": false
+  },
+  "nansen_row": {
+    "chain": "arc",
+    "block_timestamp": "2026-09-18T11:45:22Z",
+    "transaction_hash": "0x63a1d55b774ae036c8835b25779a3d179c5a371f84d7c61a04165ced1c9d9a5f",
+    "trader_address": "0x1f1f1c9f75fc95caf63587d28fe533bd94d7ea7e",
+    "token_bought_address": "0x8faae5592b9acc27a79fca745c6b872adf514a5d",
+    "token_sold_address": "0xfffffffffffffffffffffffffffffffffffffffe",
+    "token_bought_amount": 386829.1680335633,
+    "token_sold_amount": 85.0
+  }
+}
