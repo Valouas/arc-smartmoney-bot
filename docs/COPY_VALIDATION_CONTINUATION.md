@@ -106,3 +106,82 @@ bytecode, including metadata (which may cause false negatives), and never use
 absence of instructions as an automatic token exclusion policy. Remaining work
 is semantic inventory review and reviewed route reconstruction on isolated copies,
 then the unchanged holding calculation and dated funds/performance checks.
+
+## Second continuation: isolated replay (2026-09-23 local)
+
+All 2,110 exact-block code observations are now saved. All 471 canonical pool
+observations match their reviewed anchor. The collection reused 76 observations
+and made 2,035 HTTP attempts (203,500 CU / $0.2035 conservative reservation).
+
+`copy_research_replay.py` reads source histories and caches query-only and writes
+a new research directory. It never writes the engine's registry or statuses.
+Canonical V3 proofs are checked against their manifests, reciprocal factory
+membership, CREATE2 derivation and exact-block runtime code. The existing direct
+swap classifier and cash/basket guards remain in use. Quantities for FIFO timing
+come from exact raw integers; a local 120-digit Decimal context prevents artificial
+dust from rounding large raw balances. No historical token-decimal assumption is
+needed for this timing metric. Raw units are NOT dollar values or quantities for
+execution.
+
+Unsolicited isolated credits are explained only when the complete raw snapshot
+shows no disposal or trade of those tokens, no cash touch, no Swap event, zero
+transaction native value and an external sender. A specific log-only emitter is
+explained only with its previously reviewed exact runtime hash at the transaction
+block and no storage/call instructions, plus no cash/swap and an external sender.
+These are explicit research annotations with before/after records; original
+events are retained. Missing raw records, unresolved routes or inventory flows
+still block the whole wallet metric. Nothing is promoted from partial statistics.
+
+A local search of request ledgers and 77 backup caches did not recover the 144
+missing raw transaction/receipt responses. `copy_raw_proofs.py` filled only those
+explicit gaps from transactions already in the authorized Top25 snapshot. It
+checks paid scope, refuses already cached responses, permits only transaction,
+receipt and chain-id reads, and caps a run at 450 attempts / 900 seconds under the
+existing cumulative $10 reservation. A pre-write campaign backup, every HTTP
+response and an isolated cache are retained. Actual completion: 144/144 proofs,
+145 attempts including chain identity, 14,500 CU / $0.0145 reservation. Cumulative
+campaign reservation: 6,740,100 CU / $6.7401. These are conservative local
+reservations, not a statement of the provider invoice. No Nansen calls.
+
+The latest isolated replay explains 1,033 flagged observations and yields:
+
+| Wallet | Holding result | Median | First-sale samples |
+|---|---|---:|---:|
+| `0x58816ef4f2b24b89e2eef1951a7cdc16380f44d6` | Within limit | 292 s | 80 |
+| `0xdb1f232180be0a148e53caae32182150aacc2026` | Within limit | 219 s | 81 |
+| `0x821f94ea4f2655b95b5740466ea56d7f94134c14` | Too short | 31 s | 34 |
+| `0x7c2c9796f89190a34ab36e712837914d5fbdf2b1` | Too short | 34 s | 32 |
+| `0x7af4253a4704e6d2aeeaf3455c22b7742473c241` | Too short | 108 s | 291 |
+
+The other 20 remain unknown. The two passing holding dossiers have stored ROI
+42.60% / 55.56%, average 2.47 / 2.46 operations/day and observed funds $214.30 /
+$521.24 dated 2026-09-22 00:29 / 00:31 UTC. Both are outside the infrastructure
+registry. They satisfy the requested research criteria on these dated snapshots,
+not a guarantee of profitability, present balance or engine qualification. Their
+fast-exit proportions are still 32.5% / 37.0%; a median above two minutes does not
+mean every trade is copyable. No paper/live activation; do not infer independent
+identities from two similar trading histories.
+
+Artifacts (all retained separately):
+- `outputs/research_replay_20260923/`: initial replay, before filling raw gaps.
+- `outputs/raw_evidence_recovery_20260923/`: missing-key list and local searches.
+- `outputs/raw_proofs_top25_20260923/`: completed bounded raw proofs and backup.
+- `outputs/research_replay_complete_raw_20260923/`: latest replay and manifests.
+- `outputs/copy_validation_progress_20260922/new_research_qualifiers_20260923.json`:
+  dated performance/funds joined with the two passing holding results.
+
+The preservation comparison confirms all 5,342 original transaction payloads
+unchanged. 129 targeted deterministic regression tests pass, including offline
+network denial, source immutability, narrow inventory exceptions, exact code
+requirements and bounded paid scope.
+
+Next: investigate remaining multi-hop routes and inventory ambiguities locally.
+A stored aggregator calldata sample yields a V4 PoolKey whose hash exactly matches
+the emitted pool id; this may avoid a new initialization-log scan. It is only key
+evidence, not yet a reviewed route decoder. V4 event deltas use negative inputs
+and positive outputs, as shown by the implementation of
+[Pool.swap](https://raw.githubusercontent.com/Uniswap/v4-core/main/src/libraries/Pool.sol)
+and [PoolManager](https://raw.githubusercontent.com/Uniswap/v4-core/main/src/PoolManager.sol).
+Hooks can change caller accounting; never replace actual wallet cash flow with
+event amounts. Keep production decoding unchanged and prove full currency paths
+with deterministic fixtures before accepting any additional research trades.
