@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from copy_candidate_report import score, frequency
+from test_copy_holding_duration import save_history
 from copy_recovery_report import analyze, main, outcome_metrics, recovery_report, zero_value_position
 
 W='0x'+'1'*40
@@ -30,7 +31,8 @@ def payload(realized=None, opened=None):
 
 
 def strict(p):
-    return dict(score(p,W),**frequency(p),min_roi_pct=20)
+    return dict(score(p,W),**frequency(p),min_roi_pct=20,
+                holding_duration_eligible=True,holding_duration_status='WITHIN_HOLDING_LIMIT')
 
 
 def test_small_unpriced_position_can_be_audited_without_changing_strict_score():
@@ -151,6 +153,20 @@ def test_existing_frequency_and_roi_thresholds_remain_required():
     assert not analyze(p,s)['research_recovery_candidate']
 
 
+@pytest.mark.parametrize('holding',[False,None])
+def test_prudent_scenario_cannot_bypass_holding_filter(holding):
+    p=payload([position(1)], [position(2,buy=1,holding=100,price=0)])
+    s=strict(p)
+    if holding is None:
+        s.pop('holding_duration_eligible')
+    else:
+        s['holding_duration_eligible']=holding
+    r=analyze(p,s)
+    assert r['performance_recovery_candidate']
+    assert not r['research_recovery_candidate']
+    assert r['prudent_scenario']['roi_pct']>20
+
+
 @pytest.fixture
 def stored(tmp_path):
     db=tmp_path/'test.sqlite3';scope=tmp_path/'scope.json';registry=tmp_path/'dex.json'
@@ -158,6 +174,7 @@ def stored(tmp_path):
     registry.write_text(json.dumps({'chain_id':5042,'emitters':[]}),encoding='utf-8')
     p=payload([position(1)],[position(2,buy=1,holding=100,price=0)])
     with sqlite3.connect(db) as c:
+        save_history(c)
         c.execute('CREATE TABLE external_wallet_metrics(wallet,provider,snapshot_key,observed_at,retrieved_at,chain_id,payload,error_category)')
         c.execute('INSERT INTO external_wallet_metrics VALUES(?,?,?,?,?,?,?,?)',(W,'nansen','saved',1,1,5042,json.dumps(p),None))
     return db,scope,registry

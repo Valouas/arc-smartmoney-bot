@@ -138,29 +138,32 @@ def analyze(payload, strict):
                 known_buy_capital_coverage=known_capital/cost_total if usable_denominator else None,
                 capital_coverage_status='KNOWN_POSITIVE_COSTS' if usable_denominator else 'UNKNOWN_OR_ZERO_COST',
                 # No replacement of strict historical_copy_score, ROI, or eligibility.
-                prudent_scenario=scenario, research_recovery_candidate=qualifies,
+                prudent_scenario=scenario, performance_recovery_candidate=qualifies,
+                research_recovery_candidate=qualifies and strict.get('holding_duration_eligible', False),
                 unresolved_positions=unresolved, positions=diagnostics,
                 copyability_checks=dict(current_funds='NOT_CHECKED',liquidity='NOT_CHECKED',
                     executable_slippage='NOT_CHECKED',delay_sensitivity='NOT_CHECKED',
-                    trade_timing_and_holding_duration='NOT_AVAILABLE_IN_POSITION_AGGREGATES'),
+                    trade_timing_and_holding_duration=strict.get('holding_duration_status', 'UNKNOWN_HOLDING_DURATION')),
                 live_signal_authority=False,paper_selected=False)
 
 
-def recovery_report(db_path, shortlist_path, excluded=(), maximum=50, minimum_roi=20):
-    strict=report(db_path,shortlist_path,excluded,maximum,minimum_roi)
+def recovery_report(db_path, shortlist_path, excluded=(), maximum=50, minimum_roi=20, minimum_holding=120):
+    strict=report(db_path,shortlist_path,excluded,maximum,minimum_roi,minimum_holding)
     rows=[]
     with closing(sqlite3.connect(Path(db_path).resolve().as_uri()+'?mode=ro',uri=True)) as db:
         db.execute('PRAGMA query_only=ON')
         db.execute('BEGIN')
         for original in strict['rows']:
             row=dict(original)
-            row.update(recovery_status='NOT_ANALYZABLE',research_recovery_candidate=False,
+            row.update(recovery_status='NOT_ANALYZABLE',research_recovery_candidate=False,performance_recovery_candidate=False,
                        live_signal_authority=False,paper_selected=False)
             if original['status'] in ('AVAILABLE','PARTIAL_POSITION_DATA','NO_EVALUABLE_POSITIONS'):
                 p=db.execute("SELECT payload FROM external_wallet_metrics WHERE wallet=? AND provider='nansen' AND snapshot_key=?",
                              (row['wallet'],row['snapshot_key'])).fetchone()
                 if p is not None:
                     row.update(analyze(json.loads(p[0]),original))
+            if 'copyability_checks' in row:
+                row['copyability_checks']['trade_timing_and_holding_duration'] = row['holding_duration_status']
             rows.append(row)
     priority={'ONE_POSITION':0,'FEW_POSITIONS':1,'OTHER':2}
     rows.sort(key=lambda r:(not r['research_recovery_candidate'],priority.get(r.get('audit_priority'),3),
@@ -170,6 +173,8 @@ def recovery_report(db_path, shortlist_path, excluded=(), maximum=50, minimum_ro
                  single_position_wallets=sum(r.get('omitted_position_count')==1 for r in partial),
                  prudent_scenarios=sum(r['recovery_status']=='PRUDENT_SCENARIO' for r in rows),
                  recovered_research_candidates=sum(r['research_recovery_candidate'] for r in rows),
+                 wallets_excluded_short_holding=strict['wallets_excluded_short_holding'],
+                 wallets_unknown_holding=strict['wallets_unknown_holding'],
                  single_position_candidates=sum(r['research_recovery_candidate'] and r.get('omitted_position_count')==1 for r in rows),
                  unresolved_wallets=sum(r['recovery_status']=='UNRESOLVED' for r in rows),
                  blockers=dict(Counter(p['reason'] for r in rows for p in r.get('unresolved_positions',[]))))
@@ -208,11 +213,13 @@ def render_html(result):
                 fmt(100*r['known_buy_capital_coverage']) if r.get('known_buy_capital_coverage') is not None else 'N/D',
                 fmt(r['operations_per_day']),fmt(100*p['capital_weighted_hit_rate']) if p else 'N/D',
                 fmt(100*p['concentration']) if p else 'N/D',
-                ', '.join(sorted({x['reason'] for x in r.get('unresolved_positions',[])}))]
+                ', '.join(sorted({x['reason'] for x in r.get('unresolved_positions',[])})),
+                fmt(r.get('median_first_sale_seconds')), r['holding_duration_status'],r['holding_sample_size']]
         rows.append('<tr>'+''.join('<td>'+esc(v)+'</td>' for v in fields)+'</tr>')
     headers=['Wallet','Priorité','État','Recherche','ROI scénario %','Score scénario /100',
              'Positions bloquantes','Valeurs supposées nulles','Capital achats exploitable %',
-             'Opérations/jour','Réussite pondérée capital %','Concentration %','Blocages restants']
+             'Opérations/jour','Réussite pondérée capital %','Concentration %','Blocages restants',
+             'Détention médiane (s)','Filtre détention','Achats avec première vente']
     s=result['summary']
     return '''<!doctype html><html lang="fr"><meta charset="utf-8"><title>Scénarios prudents des wallets incomplets</title>
 <style>body{font:15px system-ui;margin:30px;color:#17324d;background:#f5f8fb}section{background:white;padding:22px;margin:20px 0;border-radius:10px}.scroll{overflow:auto;max-height:700px}table{border-collapse:collapse;white-space:nowrap;font-size:13px}th,td{padding:10px;border-bottom:1px solid #dce4ec}th{background:#203a5b;color:white;position:sticky;top:0}tr:nth-child(even){background:#edf4f8}input{padding:12px;width:420px}p{max-width:1050px}</style>
@@ -233,6 +240,7 @@ def main(argv=None):
     p.add_argument('--registry',default='trusted_dex.json')
     p.add_argument('--max-operations-per-day',type=float,default=50)
     p.add_argument('--min-roi-pct',type=float,default=20)
+    p.add_argument('--min-holding-seconds',type=float,default=120)
     p.add_argument('--output-dir',required=True,help='New directory, never overwrite existing evidence')
     args=p.parse_args(argv)
     registry=json.loads(Path(args.registry).read_text(encoding='utf-8-sig'))
@@ -244,7 +252,7 @@ def main(argv=None):
     if directory.exists():
         p.error('Output exists; choose a new directory to preserve evidence')
     result=recovery_report(args.db,args.shortlist,{r['address'].lower() for r in registry['emitters']},
-                           args.max_operations_per_day,args.min_roi_pct)
+                           args.max_operations_per_day,args.min_roi_pct,args.min_holding_seconds)
     result['source_shortlist_sha256']=hashlib.sha256(Path(args.shortlist).read_bytes()).hexdigest()
     result['implementation_sha256']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     result['strict_scoring_sha256']=hashlib.sha256(Path(report.__code__.co_filename).read_bytes()).hexdigest()

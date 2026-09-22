@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from copy_candidate_report import main, report, score, shortlist, wilson, frequency
+from test_copy_holding_duration import save_history
 
 W = '0x' + '1'*40
 OTHER = '0x' + '2'*40
@@ -35,6 +36,7 @@ def stored(tmp_path):
     path.write_text(json.dumps(dict(schema_version=1, purpose='copy_research_shortlist',
                                    wallets=[W, MISSING])), encoding='utf-8')
     with sqlite3.connect(db_path) as db:
+        save_history(db)
         db.execute('''CREATE TABLE external_wallet_metrics(wallet,provider,snapshot_key,
                     observed_at,retrieved_at,chain_id,payload,data_complete,error_category)''')
         for w, provider, stamp, p in [(W, 'nansen', 1, payload()),
@@ -293,6 +295,34 @@ def test_unknown_roi_never_passes_minimum(stored):
         con.execute("UPDATE external_wallet_metrics SET payload=? WHERE wallet=? AND provider='nansen'",(json.dumps(p),W))
     r=next(r for r in report(db,path)['rows'] if r['wallet']==W)
     assert r['roi_status']=='UNKNOWN_ROI' and not r['copy_research_eligible']
+
+
+@pytest.mark.parametrize('duration,eligible', [(119,False),(120,True)])
+def test_holding_gate_preserves_scores_and_shortlist(stored,duration,eligible):
+    from test_copy_holding_duration import tx
+    db,path=stored
+    with sqlite3.connect(db) as con:
+        t=tx(2,100+duration,'SELL')
+        con.execute('UPDATE historical_transactions SET payload=? WHERE tx_hash=?',(json.dumps(t),t['tx_hash']))
+    before=db.read_bytes(),path.read_bytes()
+    r=next(r for r in report(db,path)['rows'] if r['wallet']==W)
+    assert r['copy_research_eligible'] is eligible
+    assert r['performance_research_eligible'] and r['historical_copy_score'] is not None
+    assert not r['paper_selected'] and not r['live_signal_authority']
+    assert (db.read_bytes(),path.read_bytes())==before
+
+
+def test_unknown_holding_is_pending_not_passed_or_deleted(stored,capsys):
+    db,path=stored
+    with sqlite3.connect(db) as con:
+        con.execute('UPDATE historical_transactions SET payload=NULL')
+    result=report(db,path)
+    r=next(r for r in result['rows'] if r['wallet']==W)
+    assert r['performance_research_eligible'] and not r['copy_research_eligible']
+    assert r['holding_duration_status']=='UNKNOWN_HOLDING_DURATION'
+    assert len(result['rows'])==2
+    main(['--db',str(db),'--shortlist',str(path),'--eligible-only'])
+    assert not any(line.startswith('0x') for line in capsys.readouterr().out.splitlines())
 
 
 @pytest.mark.parametrize('value',[float('nan'),float('inf'),None,True])

@@ -228,5 +228,44 @@ balance evidence are retained separately; no Nansen refresh or bulk rescan occur
 5 of the 30 required token valuations to reach the minimum. The previous 9
 candidates were also checked: 6 reached the minimum, 3 were not confirmed.
 The dated funded-review file/report is separate from the general offline score
-report: the latter's eligibility flag still refers to ROI/frequency/data quality,
+report: the latter's eligibility flag refers to ROI/frequency/data quality/holding duration,
 not a fresh balance guarantee. No funded-review file is consumed by the engine.
+
+## Minimum holding duration (owner-approved, 22 September 2026)
+
+`COPY_MIN_HOLDING_SECONDS=120` adds a research selection gate. Below 120 seconds
+is `EXCLUDED_SHORT_HOLDING`; exactly 120 passes. The owner chose the median time
+from each acquisition to its **first partial sale**, not the final dust exit.
+`copy_holding_duration.py` matches confirmed swaps FIFO per token. There is one
+unweighted sample per buy lot with an observed first sale, regardless of later
+sales or capital size. FIFO is an accounting convention for fungible inventory.
+This is a descriptive historical statistic, not proof of profitable execution.
+
+Still-unsold buys are censored: counted separately, not assigned zero or the
+current age, and excluded from this observed-exit median. Always inspect sample
+size, unsold count and dated coverage; one observed exit is weak evidence even
+though no minimum activity filter is added. Open losses remain in the existing
+ROI calculations. Nansen position aggregates and date windows cannot establish
+holding times. We read only complete version-1 local historical generations, or
+the retained non-invalidated completed generation during refresh; expose its
+cutoff and source. We never merge generations. Collection errors, missing payloads,
+inventory gaps, unknown timestamps, unmatched sells, conflicting duplicates and
+ambiguous trade order produce `UNKNOWN_HOLDING_DURATION`, which does not pass.
+Missing evidence stays in the report/shortlist for later audit, with its score
+unchanged. There is no automatic fetch or reconstruction.
+
+`performance_research_eligible` and `performance_recovery_candidate` retain the
+ROI/frequency assessment. `copy_research_eligible` and `research_recovery_candidate`
+add the mandatory duration gate for both strict and prudent research candidates.
+Neither flag provides paper/live authority. No engine threshold, watchlist,
+checkpoint, or historical evidence is changed. Previously exported rankings
+remain archived, but predate this additional filter.
+
+```powershell
+.\.venv\Scripts\python.exe copy_candidate_report.py --top 50 --eligible-only
+```
+
+Omit `--eligible-only` to see pending/excluded rows and their timing status; `--json`
+always includes the full scope and diagnostics. Recovery exports use the same
+default 120-second gate, configurable explicitly with `--min-holding-seconds`.
+Both commands remain offline: zero Nansen calls/credits and read-only SQLite.

@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
+from copy_holding_duration import stored_holding, valid_minimum
 
 ADDRESS = re.compile(r'0x[0-9a-fA-F]{40}\Z')
 
@@ -139,7 +140,8 @@ def score(payload, wallet):
                 source_flags=payload.get('flags', []))
 
 
-def report(db_path, shortlist_path, excluded=(), max_operations_per_day=50, min_roi_pct=20):
+def report(db_path, shortlist_path, excluded=(), max_operations_per_day=50, min_roi_pct=20, min_holding_seconds=120):
+    valid_minimum(min_holding_seconds)
     if not number(max_operations_per_day) or max_operations_per_day <= 0:
         raise ValueError('invalid_max_operations_per_day')
     if not number(min_roi_pct):
@@ -151,6 +153,7 @@ def report(db_path, shortlist_path, excluded=(), max_operations_per_day=50, min_
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA query_only=ON')
         db.execute('BEGIN')
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for wallet in wallets:
             row = dict(wallet=wallet, status='MISSING_NANSEN_DETAIL', historical_copy_score=None,
                        detail_available=False, live_signal_authority=False, paper_selected=False)
@@ -174,9 +177,11 @@ def report(db_path, shortlist_path, excluded=(), max_operations_per_day=50, min_
             row['min_roi_pct'] = min_roi_pct
             row['roi_status'] = ('UNKNOWN_ROI' if not number(roi) else
                                  'EXCLUDED_LOW_ROI' if roi < min_roi_pct else 'WITHIN_ROI_LIMIT')
-            row['copy_research_eligible'] = (row['historical_copy_score'] is not None
+            row['performance_research_eligible'] = (row['historical_copy_score'] is not None
                                             and row['frequency_status'] == 'WITHIN_FREQUENCY_LIMIT'
                                             and row['roi_status'] == 'WITHIN_ROI_LIMIT')
+            row.update(stored_holding(db, wallet, min_holding_seconds, tables))
+            row['copy_research_eligible'] = row['performance_research_eligible'] and row['holding_duration_eligible']
             rows.append(row)
     rows.sort(key=lambda r: (not r['copy_research_eligible'],
                             r['frequency_status'] != 'WITHIN_FREQUENCY_LIMIT',
@@ -191,6 +196,8 @@ def report(db_path, shortlist_path, excluded=(), max_operations_per_day=50, min_
             'wallets_excluded_low_roi': sum(r['roi_status'] == 'EXCLUDED_LOW_ROI' for r in rows),
             'wallets_unknown_roi': sum(r['roi_status'] == 'UNKNOWN_ROI' for r in rows),
             'copy_research_candidates': sum(r['copy_research_eligible'] for r in rows),
+            'wallets_excluded_short_holding': sum(r['holding_duration_status'] == 'EXCLUDED_SHORT_HOLDING' for r in rows),
+            'wallets_unknown_holding': sum(r['holding_duration_status'] == 'UNKNOWN_HOLDING_DURATION' for r in rows),
             'nansen_http_calls': 0, 'nansen_credits_consumed': 0, 'rows': rows}
 
 
@@ -201,6 +208,7 @@ def main(argv=None):
     parser.add_argument('--db', default='data/arc_bot.sqlite3')
     parser.add_argument('--shortlist', default='data/copy_research_shortlist.json')
     parser.add_argument('--json', action='store_true', help='Print full shortlist with provenance')
+    parser.add_argument('--eligible-only', action='store_true', help='Display only candidates passing every research gate')
     args = parser.parse_args(argv)
     if os.getenv('COPY_SHORTLIST_ONLY', 'true').lower() != 'true':
         parser.error('COPY_SHORTLIST_ONLY must be true; broad scoring is not supported')
@@ -219,7 +227,12 @@ def main(argv=None):
             raise ValueError()
     except ValueError:
         parser.error('COPY_MIN_ROI_PCT must be finite')
-    result = report(args.db, args.shortlist, infrastructure_addresses(), maximum, minimum_roi)
+    try:
+        minimum_holding = float(os.getenv('COPY_MIN_HOLDING_SECONDS', '120'))
+        valid_minimum(minimum_holding)
+    except ValueError:
+        parser.error('COPY_MIN_HOLDING_SECONDS must be finite and nonnegative')
+    result = report(args.db, args.shortlist, infrastructure_addresses(), maximum, minimum_roi, minimum_holding)
     if args.json:
         print(json.dumps(result, ensure_ascii=True, allow_nan=False, indent=2))
         return
@@ -229,8 +242,10 @@ def main(argv=None):
     print(f"Plafond: {maximum:g} operations/jour en moyenne | {result['wallets_excluded_frequency']} exclus pour frequence | "
           f"{result['wallets_unknown_frequency']} frequence inconnue | {result['copy_research_candidates']} candidats audit copy")
     print(f"ROI minimum: {minimum_roi:g}% | {result['wallets_excluded_low_roi']} exclus pour ROI | {result['wallets_unknown_roi']} ROI inconnu")
+    print(f"Detention mediane avant premiere vente >= {minimum_holding:g}s | {result['wallets_excluded_short_holding']} exclus trop rapides | {result['wallets_unknown_holding']} durees inconnues (non admis)")
     print('wallet                                      score   x2/x5/x10  ROI%  multiple  Wilson  win%   n  concentration  PnL USD(info) status')
-    for r in result['rows'][:args.top]:
+    displayed = [r for r in result['rows'] if r['copy_research_eligible']] if args.eligible_only else result['rows']
+    for r in displayed[:args.top]:
         fmt = lambda k, pct=False: '-' if r.get(k) is None else f"{r[k]*(100 if pct else 1):.2f}"
         counts = '/'.join(str(r.get(f'x{x}', '-')) for x in (2, 5, 10))
         pnl = (r.get('pnl_informative') or {}).get('total_gain')
@@ -238,6 +253,7 @@ def main(argv=None):
         print(f"{r['wallet']}  {fmt('historical_copy_score'):>6}  {counts:>10}  {fmt('roi_pct'):>8}  {fmt('capital_multiple'):>8}x  {fmt('wilson', True):>6}  "
               f"{fmt('win_rate', True):>6} {r.get('sample_size', '-'):>3}  {fmt('concentration', True):>6}%  {pnl_text:>13} {r['status']}")
         print(f"  Operations: {r['operations']} | jours: {fmt('observation_days')} | op/j: {fmt('operations_per_day')} | {r['frequency_status']} | {r['roi_status']}")
+        print(f"  Detention mediane: {fmt('median_first_sale_seconds')}s | achats avec premiere vente: {r['holding_sample_size']} | achats sans vente: {r['holding_unsold_buy_count']} | {r['holding_duration_status']} | candidat: {r['copy_research_eligible']}")
         if r.get('excluded_positions'):
             reasons = sorted({p['reason'] for p in r['excluded_positions']})
             print(f"  {len(r['excluded_positions'])} positions non evaluables: {', '.join(reasons)}")
