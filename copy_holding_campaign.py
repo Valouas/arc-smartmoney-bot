@@ -1,4 +1,4 @@
-"""Resumable public-only holding-time research; never writes production authority."""
+"""Resumable holding-time research; optional bounded Alchemy, no engine authority."""
 import argparse
 from collections import Counter
 from contextlib import closing
@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import sqlite3
 import time
+import math
 
 from arcscan import ArcscanClient
 from copy_candidate_report import shortlist
@@ -16,7 +17,9 @@ from historical_collector import HistoricalCollector, parse_page
 from historical_snapshots import decoding_context
 from historical_store import SCHEMA
 from process_lock import ProcessLock
-from rpc_transport import RPCError, ResilientRPCProvider, SharedRateLimiter
+from rpc_transport import RPCError, SharedRateLimiter, SharedComputeLimiter
+from copy_holding_transport import (CampaignRPCProvider, AlchemyCampaignSession,
+    require_alchemy_arc, RESERVED_CU_PER_ATTEMPT, RESERVED_USD_PER_MILLION_CU)
 
 QUEUE = """
 CREATE TABLE campaign_queue (
@@ -84,6 +87,9 @@ class CampaignBudget(Budget):
         self.db=db
         self.counts=Counter({r['service']:r['attempts'] for r in db.execute('SELECT * FROM campaign_budget')})
         self.deadline=time.monotonic()+max(0,settings['created_at']+settings['max_seconds']-time.time())
+        db.execute('CREATE TABLE IF NOT EXISTS campaign_paid_budget(id INTEGER PRIMARY KEY CHECK(id=1),attempts INTEGER NOT NULL,reserved_cu INTEGER NOT NULL)')
+        db.execute('INSERT OR IGNORE INTO campaign_paid_budget VALUES(1,0,0)');db.commit()
+        self.paid_cap=settings.get('paid_rpc',{}).get('reserved_cu_cap',0)
 
     def take(self,service,method):
         if time.monotonic()>=self.deadline:raise PilotLimit()
@@ -92,6 +98,45 @@ class CampaignBudget(Budget):
                 (service,self.limits[service])).rowcount
         if not changed:raise PilotLimit()
         self.counts[service]+=1;self.methods[method]+=1
+
+    def paid_available(self):
+        used=self.db.execute('SELECT reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()[0]
+        return used+RESERVED_CU_PER_ATTEMPT<=self.paid_cap
+
+    def take_paid(self,method):
+        if time.monotonic()>=self.deadline:raise PilotLimit()
+        # Reserve both limits atomically, including HTTP errors and retry attempts.
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            rpc_used=self.db.execute("SELECT attempts FROM campaign_budget WHERE service='rpc'").fetchone()[0]
+            paid_used=self.db.execute('SELECT reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()[0]
+            if rpc_used>=self.limits['rpc']:raise PilotLimit()
+            if paid_used+RESERVED_CU_PER_ATTEMPT>self.paid_cap:raise PaidBudgetLimit()
+            self.db.execute("UPDATE campaign_budget SET attempts=attempts+1 WHERE service='rpc'")
+            self.db.execute('UPDATE campaign_paid_budget SET attempts=attempts+1,reserved_cu=reserved_cu+? WHERE id=1',(RESERVED_CU_PER_ATTEMPT,))
+        self.counts['rpc']+=1;self.methods[method]+=1
+
+
+class PaidBudgetLimit(PilotLimit):
+    pass
+
+
+def enable_paid(directory,cfg,max_usd):
+    if isinstance(max_usd,bool) or not math.isfinite(max_usd) or not 0<max_usd<=20:
+        raise ValueError('paid_budget_must_be_between_0_and_20_usd')
+    require_alchemy_arc(cfg.rpc_url)
+    out=Path(directory).resolve()
+    with ProcessLock(out/'worker.lock'):
+        old=(out/'settings.json').read_bytes();settings=json.loads(old)
+        (out/f'settings_before_paid_{time.time_ns()}.json').write_bytes(old)
+        settings['paid_rpc']=dict(enabled=True,authorized_max_usd=max_usd,
+            reserved_cu_cap=int(max_usd*1_000_000/RESERVED_USD_PER_MILLION_CU),
+            reserved_cu_per_attempt=RESERVED_CU_PER_ATTEMPT,
+            reserved_usd_per_million_cu=RESERVED_USD_PER_MILLION_CU,
+            configured_at=time.time())
+        temp=out/'settings.tmp';temp.write_text(json.dumps(settings,indent=2),encoding='utf-8');temp.replace(out/'settings.json')
+        # Credentials stay in .env/in memory; previous usage is never reset.
+        save_new(out/f'paid_policy_{time.time_ns()}.json',settings['paid_rpc'])
 
 
 def check_anchor(rpc,run):
@@ -137,11 +182,14 @@ def status(db,out):
     for r in rows:
         r['result']=json.loads(r['result']) if r['result'] else None
         r.update(live_signal_authority=False,paper_selected=False)
+    paid=(db.execute('SELECT attempts,reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='campaign_paid_budget'").fetchone() else (0,0))
     result=dict(updated_at=time.time(),total=len(rows),states=dict(Counter(r['state'] for r in rows)),
         http_attempts={r['service']:r['attempts'] for r in db.execute('SELECT * FROM campaign_budget')},
         transactions=db.execute('SELECT COUNT(*) FROM historical_transactions').fetchone()[0],
         decoded=db.execute('SELECT COUNT(*) FROM historical_transactions WHERE payload IS NOT NULL').fetchone()[0],
-        nansen_http_calls=0,nansen_credits_consumed=0,alchemy_http_calls=0,
+        nansen_http_calls=0,nansen_credits_consumed=0,alchemy_http_calls=paid[0],
+        alchemy_reserved_cu=paid[1],alchemy_reserved_usd=paid[1]/1_000_000*RESERVED_USD_PER_MILLION_CU,
         production_database_modified=False,rows=rows)
     temp=Path(out)/'status.tmp';temp.write_text(json.dumps(result,ensure_ascii=False,allow_nan=False,indent=2),encoding='utf-8')
     temp.replace(Path(out)/'status.json')  # Rebuildable status; immutable evidence lives in DB/backups/ledger.
@@ -164,10 +212,21 @@ def run(directory,cfg):
             assert url in PUBLIC_RPC_URLS
             rpc=object.__new__(ArcRPC);rpc.chain_id=5042
             rpc.dex_registry=TrustedDexRegistry(cfg.trusted_dex_registry,5042)
-            rpc.w3=Web3(ResilientRPCProvider(url,5042,
+            rpc.w3=Web3(CampaignRPCProvider(url,5042,
                 SharedRateLimiter(cfg.rpc_rate_limit_file+'.fallback',1),
                 session=BoundedSession(budget,'rpc',url),cache=cache))
             clients.append(rpc)
+        labels=['public_primary','public_secondary']
+        paid_client=None;paid_disabled=False
+        if settings.get('paid_rpc',{}).get('enabled'):
+            require_alchemy_arc(cfg.rpc_url)
+            paid_client=object.__new__(ArcRPC);paid_client.chain_id=5042
+            paid_client.dex_registry=TrustedDexRegistry(cfg.trusted_dex_registry,5042)
+            limiter=(SharedComputeLimiter(cfg.rpc_rate_limit_file,cfg.rpc_requests_per_second,cfg.rpc_compute_units_per_second)
+                if cfg.rpc_compute_units_per_second else SharedRateLimiter(cfg.rpc_rate_limit_file,cfg.rpc_requests_per_second))
+            paid_client.w3=Web3(CampaignRPCProvider(cfg.rpc_url,5042,limiter,
+                session=AlchemyCampaignSession(budget,cfg.rpc_url),cache=cache))
+            clients.insert(0,paid_client);labels.insert(0,'alchemy')
         arc=ArcscanClient(ARC_URL);arc.s.close();arc.s=BoundedSession(budget,'arcscan')
         last_backup=time.monotonic();steps=0;stop='COMPLETE'
         try:
@@ -180,7 +239,8 @@ def run(directory,cfg):
                     break
                 w=row['wallet'];budget.wallet=w
                 # Alternate public providers only after an actual failed attempt.
-                rpc=clients[row['failures']%len(clients)]
+                available=[r for r in clients if r is not paid_client or (not paid_disabled and budget.paid_available())]
+                rpc=available[row['failures']%len(available)]
                 try:
                     result=advance(db,w,rpc,arc)
                     if result:
@@ -189,18 +249,26 @@ def run(directory,cfg):
                             (state,json.dumps(result),result['holding_duration_reason'],w))
                     else:
                         with db:db.execute('UPDATE campaign_queue SET turns=turns+1,reason=NULL WHERE wallet=?',(w,))
+                except PaidBudgetLimit:
+                    paid_disabled=True
+                    status(db,out)
+                    continue  # Preserve partial progress; resume the same wallet on public RPC.
                 except PilotLimit:stop='BUDGET_OR_DEADLINE';break
                 except Exception as error:
                     category=error.category if isinstance(error,RPCError) else type(error).__name__
+                    if rpc is paid_client and category in ('monthly_capacity','401','403'):
+                        paid_disabled=True
                     failures=row['failures']+1
                     with db:
                         db.execute('UPDATE historical_runs SET error=? WHERE wallet=?',('campaign_'+category,w))
                         db.execute('UPDATE campaign_queue SET failures=?,turns=turns+1,next_attempt=?,state=?,reason=? WHERE wallet=?',
                             (failures,time.time()+min(1800,60*2**failures),'BLOCKED' if failures>=3 else 'PENDING',category,w))
-                    print(json.dumps(dict(wallet=w,category=category,attempt=failures,provider='public_primary' if rpc is clients[0] else 'public_secondary')),flush=True)
+                    print(json.dumps(dict(wallet=w,category=category,attempt=failures,provider=labels[clients.index(rpc)])),flush=True)
                 steps+=1
                 s=status(db,out)
-                print(json.dumps({k:s[k] for k in ('updated_at','states','decoded','transactions','http_attempts')}),flush=True)
+                progress={k:s[k] for k in ('updated_at','states','decoded','transactions','http_attempts','alchemy_http_calls','alchemy_reserved_usd')}
+                progress['chain_id_cache_hits']=sum(r.w3.provider.chain_cache_hits for r in clients)
+                print(json.dumps(progress),flush=True)
                 if time.monotonic()-last_backup>=1800:
                     snapshot(db,out/'backups','progress')
                     with closing(sqlite3.connect(out/'rpc_cache.sqlite3')) as cache_db:snapshot(cache_db,out/'backups','cache')
@@ -216,19 +284,26 @@ def run(directory,cfg):
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=['prepare','run','status'])
+    p.add_argument('action',choices=['prepare','run','status','enable-paid'])
     p.add_argument('--directory',required=True);p.add_argument('--scope')
+    p.add_argument('--max-usd',type=float)
     p.add_argument('--source',default='data/arc_bot.sqlite3')
     args=p.parse_args(argv)
     if args.action=='status':
         with closing(sqlite3.connect((Path(args.directory)/'campaign.sqlite3').resolve().as_uri()+'?mode=ro',uri=True)) as db:
+            paid=(db.execute('SELECT attempts,reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='campaign_paid_budget'").fetchone() else (0,0))
             print(json.dumps(dict(states=dict(db.execute('SELECT state,count(*) FROM campaign_queue GROUP BY state')),
-                http_attempts=dict(db.execute('SELECT service,attempts FROM campaign_budget'))),indent=2))
+                http_attempts=dict(db.execute('SELECT service,attempts FROM campaign_budget')),
+                alchemy_http_calls=paid[0],alchemy_reserved_usd=paid[1]/1_000_000*RESERVED_USD_PER_MILLION_CU),indent=2))
         return
     from config import SETTINGS
     if args.action=='prepare':
         if not args.scope:p.error('--scope required')
         prepare(args.source,args.scope,args.directory,SETTINGS)
+    elif args.action=='enable-paid':
+        if args.max_usd is None:p.error('--max-usd required')
+        enable_paid(args.directory,SETTINGS,args.max_usd)
     else:run(args.directory,SETTINGS)
 
 

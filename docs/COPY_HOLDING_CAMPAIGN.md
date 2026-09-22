@@ -5,7 +5,8 @@
 durée médiane n'est pas établie. Le périmètre est figé, ordonné par score,
 copié dans le répertoire de campagne et protégé par une empreinte SHA-256.
 
-Cette collecte de recherche n'utilise ni Nansen ni Alchemy. Elle n'écrit pas
+Cette collecte de recherche n'utilise pas Nansen. Alchemy reste désactivé par
+défaut et nécessite un budget explicite (voir ci-dessous). Elle n'écrit pas
 dans la base de production et ne donne aucune autorité paper/live. Les
 seuils, le decoder, les trusted DEX et les promotions restent inchangés.
 
@@ -35,12 +36,14 @@ Rename-Item -LiteralPath data/copy_holding_campaign_20260922/STOP -NewName ("STO
 
 ## Bornes et reprise
 
-- Endpoints explicitement autorisés : `rpc.mainnet.arc.io`, `rpc.arc-scan.org`
-  et l'activité d'adresse d'Arcscan. Aucun provider configuré payant ni autre
-  wallet ne peut être substitué par une variable d'environnement.
+- Endpoints publics explicitement autorisés : `rpc.mainnet.arc.io`,
+  `rpc.arc-scan.org` et l'activité d'adresse d'Arcscan. Le seul endpoint payant
+  optionnel est `arc-mainnet.g.alchemy.com/v2/<clé>`, avec budget activé
+  explicitement. Aucun autre provider ou wallet n'est accepté.
 - Chain ID 5042 vérifié par le transport avant les lectures.
-- Au plus une requête HTTP par seconde dans la campagne, avec le limiteur
-  RPC public partagé. Les retries comptent dans le budget.
+- Au plus une requête HTTP publique par seconde, avec le limiteur RPC public
+  partagé. Alchemy utilise le limiteur global RPS/CU existant du projet.
+  Les retries comptent dans le budget.
 - Plafond cumulé de 200 000 tentatives RPC et 10 000 tentatives Arcscan.
   Réservation SQLite avant chaque appel, conservée après redémarrage.
 - Durée maximale de 72 heures à compter de la préparation, également
@@ -79,3 +82,40 @@ sauvegardes sont conservées, avec leurs empreintes SHA-256.
 
 Ces résultats doivent ensuite être joints au classement local pour lever
 les réserves de durée ; ils ne changent pas seuls la sélection du moteur.
+
+## Accélération gratuite
+
+Le transport dédié réutilise un chain ID vérifié pendant 60 secondes maximum,
+séparément pour chaque endpoint. À expiration, la vérification doit réussir
+à nouveau. Un timeout ou un mauvais réseau invalide la valeur conservée ; aucun
+ancien résultat ne sert de secours. Les hashes de blocs limites restent lus
+hors cache. Cette optimisation ne change pas le transport des autres bots.
+
+## Alchemy optionnel, plafond persistant
+
+Après arrêt propre du worker, et seulement avec un budget choisi :
+
+```powershell
+.\.venv\Scripts\python.exe copy_holding_campaign.py enable-paid --directory data/copy_holding_campaign_20260922 --max-usd 5
+```
+
+La clé reste dans `ARC_RPC_URL` en `.env`, jamais dans les rapports. L'ancienne
+configuration est archivée avant mise à jour. La date limite et les compteurs
+existants ne sont pas réinitialisés. Chaque tentative Alchemy réserve
+**100 CU** (supérieur aux méthodes RPC autorisées connues) au tarif de prudence
+de **1 USD par million de CU**. Un budget de 5 USD autorise ainsi au maximum
+50 000 tentatives payantes. Les erreurs et retries consomment aussi une
+réservation ; le montant réservé est une provision conservatrice, pas la
+facture effective du fournisseur, ni un plafond pour les autres bots.
+
+Les coûts des méthodes ont été vérifiés le 22 septembre 2026 dans la
+[documentation Alchemy](https://www.alchemy.com/docs/reference/compute-unit-costs).
+Le [tarif PAYG publié](https://www.alchemy.com/docs/reference/pay-as-you-go-pricing-faq)
+est inférieur au tarif de prudence retenu. Les taxes et éventuelles conditions
+de facturation du compte restent distinctes.
+
+À épuisement de la provision, la collecte reprend les lectures publiques,
+sans perdre de page ni de transaction déjà persistée. Les plafonds globaux
+de la campagne restent applicables. Une réponse 401/403 ou de quota mensuel
+désactive aussi le provider payant pour l'exécution courante. `status` affiche
+les tentatives Alchemy et la provision cumulée. Aucune recharge automatique.
