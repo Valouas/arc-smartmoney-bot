@@ -15,6 +15,8 @@ def unknown(reason, minimum=120):
                 holding_duration_reason=reason, median_first_sale_seconds=None,
                 min_holding_seconds=minimum, holding_sample_size=0,
                 holding_buy_count=0, holding_unsold_buy_count=0,
+                holding_fast_exit_count=None, holding_fast_exit_pct=None,
+                holding_min_first_sale_seconds=None, holding_max_first_sale_seconds=None,
                 holding_method='MEDIAN_BUY_TO_FIRST_FIFO_SALE',
                 holding_duration_eligible=False)
 
@@ -115,6 +117,10 @@ def measure(transactions, cutoff_at, minimum=120):
             value = median(durations)
             passed = value >= minimum
             out.update(median_first_sale_seconds=value, holding_duration_eligible=passed,
+                       holding_fast_exit_count=sum(d < minimum for d in durations),
+                       holding_fast_exit_pct=100 * sum(d < minimum for d in durations) / len(durations),
+                       holding_min_first_sale_seconds=min(durations),
+                       holding_max_first_sale_seconds=max(durations),
                        holding_duration_status='WITHIN_HOLDING_LIMIT' if passed else 'EXCLUDED_SHORT_HOLDING',
                        holding_duration_reason=None)
     except (ValueError, TypeError, KeyError, InvalidOperation) as error:

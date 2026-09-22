@@ -60,6 +60,27 @@ def test_no_exit_unknown_even_old_open_position():
     r=measure([tx(1,1)],100000)
     assert r['median_first_sale_seconds'] is None and not r['holding_duration_eligible']
     assert r['holding_unsold_buy_count']==1
+    assert r['holding_fast_exit_count'] is None and r['holding_fast_exit_pct'] is None
+
+
+def test_fast_exit_share_can_be_nonzero_when_median_passes():
+    rows=[]
+    for i,delay in enumerate([30,120,300]):
+        rows.extend([tx(2*i+1,1000*i),tx(2*i+2,1000*i+delay,'SELL')])
+    rows.append(tx(7,4000))  # Unsold acquisition is not a slow exit.
+    r=measure(rows,5000)
+    assert r['holding_duration_eligible'] and r['median_first_sale_seconds']==120
+    assert r['holding_fast_exit_count']==1
+    assert r['holding_fast_exit_pct']==pytest.approx(100/3)
+    assert r['holding_min_first_sale_seconds']==30
+    assert r['holding_max_first_sale_seconds']==300
+    assert r['holding_unsold_buy_count']==1
+
+
+def test_ambiguous_history_does_not_publish_partial_fast_exit_statistics():
+    rows=[tx(1,100),tx(2,110,'SELL'),dict(tx(3,200),inventory_gap=True)]
+    r=measure(rows,1000)
+    assert r['holding_fast_exit_count'] is None and r['holding_fast_exit_pct'] is None
 
 
 @pytest.mark.parametrize('change', [

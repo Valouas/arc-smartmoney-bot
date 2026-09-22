@@ -10,7 +10,7 @@ import time
 import math
 
 from arcscan import ArcscanClient
-from copy_candidate_report import shortlist
+from copy_candidate_report import shortlist, ADDRESS
 from copy_holding_duration import stored_holding
 from copy_holding_pilot import ARC_URL, PUBLIC_RPC_URLS, Budget, BoundedSession, PilotCache, PilotLimit, save_new
 from historical_collector import HistoricalCollector, parse_page
@@ -281,7 +281,35 @@ def record_success(db,wallet,result):
             db.execute('UPDATE campaign_queue SET turns=turns+1,reason=NULL,failures=0,next_attempt=0 WHERE wallet=?',(wallet,))
 
 
-def run(directory,cfg):
+def load_priorities(path, db):
+    """Explicit report shortlist only; never insert new wallets or reset progress."""
+    if path is None:return ()
+    spec=json.loads(Path(path).read_text(encoding='utf-8'))
+    wallets=spec.get('wallets') if isinstance(spec,dict) else None
+    if (not isinstance(wallets,list) or not 1<=len(wallets)<=25 or
+        any(not isinstance(w,str) or not ADDRESS.fullmatch(w) for w in wallets)):
+        raise ValueError('invalid_priority_wallets')
+    wallets=tuple(w.lower() for w in wallets)
+    if len(set(wallets))!=len(wallets):raise ValueError('duplicate_priority_wallets')
+    if any(not db.execute('SELECT 1 FROM campaign_queue WHERE wallet=?',(w,)).fetchone() for w in wallets):
+        raise ValueError('priority_wallet_outside_campaign')
+    return wallets
+
+
+def next_pending(db, now, priorities=()):
+    if priorities:
+        row=db.execute("SELECT * FROM campaign_queue WHERE state='PENDING' AND next_attempt<=? AND wallet IN ("+
+            ','.join('?' for _ in priorities)+") ORDER BY turns,priority LIMIT 1",(now,*priorities)).fetchone()
+        if row:return row
+    return db.execute("SELECT * FROM campaign_queue WHERE state='PENDING' AND next_attempt<=? ORDER BY turns,priority LIMIT 1",(now,)).fetchone()
+
+
+def advisory_allowed(candidate, current, priorities):
+    # Provider/cache shortcuts may not displace the explicitly requested group.
+    return candidate is not None and (not current or current['wallet'] not in priorities or candidate['wallet'] in priorities)
+
+
+def run(directory,cfg,priority_file=None):
     out=Path(directory).resolve();settings=json.loads((out/'settings.json').read_text())
     if decoding_context(cfg)!=settings['context']:raise ValueError('campaign_decoder_changed')
     if hashlib.sha256((out/'scope.json').read_bytes()).hexdigest()!=settings['scope_sha256']:raise ValueError('campaign_scope_changed')
@@ -289,6 +317,11 @@ def run(directory,cfg):
     from web3 import Web3
     from dex_registry import TrustedDexRegistry
     with ProcessLock(out/'worker.lock'),closing(connect(out/'campaign.sqlite3')) as db:
+        priorities=load_priorities(priority_file,db)
+        if priorities:
+            save_new(out/f'priority_run_{time.time_ns()}.json',dict(wallets=priorities,
+                file_sha256=hashlib.sha256(Path(priority_file).read_bytes()).hexdigest(),
+                budgets_unchanged=True,progress_reset=False))
         hybrid=None
         if settings.get('hybrid_database'):
             from hybrid_history import HybridReads
@@ -322,15 +355,16 @@ def run(directory,cfg):
             while True:
                 if (out/'STOP').exists():stop='STOP_REQUESTED';break
                 if time.monotonic()>=budget.deadline:stop='DEADLINE';break
-                row=db.execute("SELECT * FROM campaign_queue WHERE state='PENDING' AND next_attempt<=? ORDER BY turns,priority LIMIT 1",(time.time(),)).fetchone()
+                row=next_pending(db,time.time(),priorities)
                 if settings.get('nansen_seed_database') and steps%2==0:
                     from nansen_holding_campaign import ready_wallet
-                    row=ready_wallet(db,settings['nansen_seed_database'],settings['context'],time.time()) or row
+                    ready=ready_wallet(db,settings['nansen_seed_database'],settings['context'],time.time())
+                    if advisory_allowed(ready,row,priorities):row=ready
                 hybrid_only=False
                 if hybrid and steps%3==1:
                     from hybrid_history import ready_wallet as hybrid_ready
                     ready=hybrid_ready(db,hybrid.path,time.time())
-                    if ready:row=ready;hybrid_only=True
+                    if advisory_allowed(ready,row,priorities):row=ready;hybrid_only=True
                 if not row:
                     if db.execute("SELECT 1 FROM campaign_queue WHERE state='PENDING'").fetchone():time.sleep(5);continue
                     break
@@ -383,6 +417,7 @@ def main(argv=None):
     p.add_argument('--max-usd',type=float)
     p.add_argument('--nansen-directory')
     p.add_argument('--hybrid-directory')
+    p.add_argument('--priority-file',help='Up to 25 existing campaign wallets to audit first; budgets unchanged')
     p.add_argument('--source',default='data/arc_bot.sqlite3')
     args=p.parse_args(argv)
     if args.action=='status':
@@ -406,7 +441,7 @@ def main(argv=None):
     elif args.action=='enable-paid':
         if args.max_usd is None:p.error('--max-usd required')
         enable_paid(args.directory,SETTINGS,args.max_usd)
-    else:run(args.directory,SETTINGS)
+    else:run(args.directory,SETTINGS,args.priority_file)
 
 
 if __name__=='__main__':main()
