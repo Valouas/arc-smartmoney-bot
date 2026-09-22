@@ -86,6 +86,20 @@ def test_missing_only_decode_no_duplicate_on_resume(prepared,monkeypatch):
     assert src.read_bytes()==before
 
 
+def test_hybrid_turn_does_not_wait_for_unrelated_rpc_or_complete_early(prepared,monkeypatch):
+    src,scope,out,cfg=prepared;prepare(src,scope,out,cfg);calls=[]
+    second=tx(2,220)['tx_hash'];third=tx(3,300)['tx_hash']
+    def decode(self,w,h,run,rpc=None):calls.append(h);return tx(2,220,'SELL')
+    monkeypatch.setattr(HistoricalCollector,'transaction',decode)
+    hybrid=SimpleNamespace(available=lambda hashes:[second] if second in hashes else [],get=lambda *a:None)
+    with connect(out/'campaign.sqlite3') as db:
+        db.execute('INSERT INTO historical_transactions VALUES(?,?,NULL)',(W,third));db.commit()
+        assert advance(db,W,rpc(),None,batch=10,hybrid=hybrid,hybrid_only=True) is None
+        assert calls==[second]
+        assert db.execute('SELECT phase FROM historical_runs').fetchone()[0]=='DECODING'
+        assert db.execute('SELECT payload FROM historical_transactions WHERE tx_hash=?',(third,)).fetchone()[0] is None
+
+
 def test_failed_transaction_preserves_successful_prefix_and_never_completes(prepared,monkeypatch):
     src,scope,out,cfg=prepared;prepare(src,scope,out,cfg)
     calls=[]

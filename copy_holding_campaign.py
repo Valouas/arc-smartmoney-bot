@@ -158,18 +158,45 @@ def enable_nansen(directory,nansen_directory):
         temp.replace(out/'settings.json')
 
 
-def decode_hashes(db,wallet,hashes,run,rpc,*,early=False):
+def enable_hybrid(directory,hybrid_directory):
+    out=Path(directory).resolve();side=Path(hybrid_directory).resolve()
+    policy=json.loads((side/'settings.json').read_text())
+    if Path(policy['campaign']).resolve()!=out:raise ValueError('hybrid_campaign_mismatch')
+    with ProcessLock(out/'worker.lock'),closing(connect(out/'campaign.sqlite3')) as db:
+        old=(out/'settings.json').read_bytes();settings=json.loads(old)
+        if any(settings[k]!=policy[k] for k in ('context','scope_sha256')):raise ValueError('hybrid_scope_mismatch')
+        snapshot(db,out/'backups','before_hybrid')
+        (out/f'settings_before_hybrid_{time.time_ns()}.json').write_bytes(old)
+        settings['hybrid_database']=str(side/'history.sqlite3')
+        temp=out/'settings.tmp';temp.write_text(json.dumps(settings,indent=2),encoding='utf-8');temp.replace(out/'settings.json')
+
+
+def decode_hashes(db,wallet,hashes,run,rpc,*,early=False,hybrid=None):
     decoder=object.__new__(HistoricalCollector)
     for h in hashes:
         with rpc.w3.provider.historical_headers():
-            payload=decoder.transaction(wallet,h,run,rpc=rpc)
+            reads=hybrid.get(h,run,rpc) if hybrid else None
+            source='rpc'
+            if reads is not None:
+                payload=decoder.transaction(wallet,h,run,reads=reads,rpc=rpc)
+                if payload.get('error') or payload.get('inventory_gap'):
+                    # Preserve provider evidence; resolve ambiguity through the
+                    # original transport/decoder, never through Nansen labels.
+                    payload=decoder.transaction(wallet,h,run,rpc=rpc)
+                    source='rpc_after_dune_ambiguity'
+                else:source='dune_raw_canonical_rpc'
+            else:payload=decoder.transaction(wallet,h,run,rpc=rpc)
         with db:
-            db.execute('UPDATE historical_transactions SET payload=? WHERE wallet=? AND tx_hash=? AND payload IS NULL',
-                       (json.dumps(payload,allow_nan=False),wallet,h))
+            changed=db.execute('UPDATE historical_transactions SET payload=? WHERE wallet=? AND tx_hash=? AND payload IS NULL',
+                       (json.dumps(payload,allow_nan=False),wallet,h)).rowcount
+            if hybrid and changed:
+                db.execute('''CREATE TABLE IF NOT EXISTS campaign_read_sources(
+                    wallet TEXT,tx_hash TEXT,source TEXT,at REAL,PRIMARY KEY(wallet,tx_hash))''')
+                db.execute('INSERT OR IGNORE INTO campaign_read_sources VALUES(?,?,?,?)',(wallet,h,source,time.time()))
             if early:db.execute('UPDATE campaign_nansen_seeds SET decoded_early=1 WHERE wallet=? AND tx_hash=?',(wallet,h))
 
 
-def advance(db,wallet,rpc,arc,*,batch=10,seed_database=None,context=None):
+def advance(db,wallet,rpc,arc,*,batch=10,seed_database=None,context=None,hybrid=None,hybrid_only=False):
     """One fully validated page or a small decoder batch. Commit each successful tx."""
     run=dict(db.execute('SELECT * FROM historical_runs WHERE wallet=?',(wallet,)).fetchone())
     if run['version']!=1:raise ValueError('campaign_invalid_generation')
@@ -196,18 +223,22 @@ def advance(db,wallet,rpc,arc,*,batch=10,seed_database=None,context=None):
         # Decode advisory hashes early, but never publish completeness while the
         # authoritative Arcscan pagination is unfinished. Existing payloads stay intact.
         early=[]
-        for h in seeds:
+        for h in (hybrid.prioritize(seeds) if hybrid else seeds):
             if len(early)>=batch:break
             if db.execute('SELECT 1 FROM historical_transactions WHERE wallet=? AND tx_hash=? AND payload IS NULL',(wallet,h)).fetchone():
                 early.append(h)
-        decode_hashes(db,wallet,early,run,rpc,early=True)
+        decode_hashes(db,wallet,early,run,rpc,early=True,hybrid=hybrid)
         return None
     missing=db.execute('SELECT tx_hash FROM historical_transactions WHERE wallet=? AND payload IS NULL ORDER BY tx_hash LIMIT ?',
         (wallet,batch)).fetchall()
+    if hybrid:
+        pending=[r[0] for r in db.execute('SELECT tx_hash FROM historical_transactions WHERE wallet=? AND payload IS NULL ORDER BY tx_hash',(wallet,))]
+        chosen=hybrid.available(pending) if hybrid_only else hybrid.prioritize(pending)
+        missing=[{'tx_hash':h} for h in chosen[:batch]]
     if missing:
         # A COMPLETE header with missing payloads must cease being complete before work.
         with db:db.execute("UPDATE historical_runs SET phase='DECODING',error=NULL WHERE wallet=?",(wallet,))
-        decode_hashes(db,wallet,[row['tx_hash'] for row in missing],run,rpc)
+        decode_hashes(db,wallet,[row['tx_hash'] for row in missing],run,rpc,hybrid=hybrid)
     if db.execute('SELECT 1 FROM historical_transactions WHERE wallet=? AND payload IS NULL LIMIT 1',(wallet,)).fetchone():return None
     check_anchor(rpc,run)
     with db:db.execute("UPDATE historical_runs SET phase='COMPLETE',completed_at=?,error=NULL WHERE wallet=?",(int(time.time()),wallet))
@@ -232,6 +263,8 @@ def status(db,out):
         nansen_seed_hashes=seeds[0],nansen_new_hashes=seeds[1],nansen_early_decoded=seeds[2],
         alchemy_reserved_cu=paid[1],alchemy_reserved_usd=paid[1]/1_000_000*RESERVED_USD_PER_MILLION_CU,
         production_database_modified=False,rows=rows)
+    result['hybrid_read_sources']=(dict(db.execute('SELECT source,count(*) FROM campaign_read_sources GROUP BY source'))
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='campaign_read_sources'").fetchone() else {})
     temp=Path(out)/'status.tmp';temp.write_text(json.dumps(result,ensure_ascii=False,allow_nan=False,indent=2),encoding='utf-8')
     temp.replace(Path(out)/'status.json')  # Rebuildable status; immutable evidence lives in DB/backups/ledger.
     return result
@@ -256,6 +289,10 @@ def run(directory,cfg):
     from web3 import Web3
     from dex_registry import TrustedDexRegistry
     with ProcessLock(out/'worker.lock'),closing(connect(out/'campaign.sqlite3')) as db:
+        hybrid=None
+        if settings.get('hybrid_database'):
+            from hybrid_history import HybridReads
+            hybrid=HybridReads(settings['hybrid_database'])
         budget=CampaignBudget(out,db,settings)
         cache=PilotCache(out/'rpc_cache.sqlite3',[cfg.rpc_cache_file,
             'outputs/holding_pilot_mainnet_20260922/rpc_cache.sqlite3','outputs/holding_pilot_live_20260922/rpc_cache.sqlite3'])
@@ -289,6 +326,11 @@ def run(directory,cfg):
                 if settings.get('nansen_seed_database') and steps%2==0:
                     from nansen_holding_campaign import ready_wallet
                     row=ready_wallet(db,settings['nansen_seed_database'],settings['context'],time.time()) or row
+                hybrid_only=False
+                if hybrid and steps%3==1:
+                    from hybrid_history import ready_wallet as hybrid_ready
+                    ready=hybrid_ready(db,hybrid.path,time.time())
+                    if ready:row=ready;hybrid_only=True
                 if not row:
                     if db.execute("SELECT 1 FROM campaign_queue WHERE state='PENDING'").fetchone():time.sleep(5);continue
                     break
@@ -297,7 +339,7 @@ def run(directory,cfg):
                 available=[r for r in clients if r is not paid_client or (not paid_disabled and budget.paid_available())]
                 rpc=available[row['failures']%len(available)]
                 try:
-                    result=advance(db,w,rpc,arc,seed_database=settings.get('nansen_seed_database'),context=settings['context'])
+                    result=advance(db,w,rpc,arc,seed_database=settings.get('nansen_seed_database'),context=settings['context'],hybrid=hybrid,hybrid_only=hybrid_only)
                     record_success(db,w,result)
                 except PaidBudgetLimit:
                     paid_disabled=True
@@ -319,6 +361,7 @@ def run(directory,cfg):
                 progress={k:s[k] for k in ('updated_at','states','decoded','transactions','http_attempts','alchemy_http_calls','alchemy_reserved_usd',
                     'nansen_seed_hashes','nansen_new_hashes','nansen_early_decoded')}
                 progress['chain_id_cache_hits']=sum(r.w3.provider.chain_cache_hits for r in clients)
+                progress['hybrid_read_sources']=s['hybrid_read_sources']
                 print(json.dumps(progress),flush=True)
                 if time.monotonic()-last_backup>=1800:
                     snapshot(db,out/'backups','progress')
@@ -335,10 +378,11 @@ def run(directory,cfg):
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=['prepare','run','status','enable-paid','enable-nansen'])
+    p.add_argument('action',choices=['prepare','run','status','enable-paid','enable-nansen','enable-hybrid'])
     p.add_argument('--directory',required=True);p.add_argument('--scope')
     p.add_argument('--max-usd',type=float)
     p.add_argument('--nansen-directory')
+    p.add_argument('--hybrid-directory')
     p.add_argument('--source',default='data/arc_bot.sqlite3')
     args=p.parse_args(argv)
     if args.action=='status':
@@ -356,6 +400,9 @@ def main(argv=None):
     elif args.action=='enable-nansen':
         if not args.nansen_directory:p.error('--nansen-directory required')
         enable_nansen(args.directory,args.nansen_directory)
+    elif args.action=='enable-hybrid':
+        if not args.hybrid_directory:p.error('--hybrid-directory required')
+        enable_hybrid(args.directory,args.hybrid_directory)
     elif args.action=='enable-paid':
         if args.max_usd is None:p.error('--max-usd required')
         enable_paid(args.directory,SETTINGS,args.max_usd)
