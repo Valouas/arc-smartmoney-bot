@@ -185,3 +185,41 @@ and [PoolManager](https://raw.githubusercontent.com/Uniswap/v4-core/main/src/Poo
 Hooks can change caller accounting; never replace actual wallet cash flow with
 event amounts. Keep production decoding unchanged and prove full currency paths
 with deterministic fixtures before accepting any additional research trades.
+
+## Third continuation: reconciled two-hop research (2026-09-23 local)
+
+`copy_route_research.py` now supports a deliberately narrow offline route: exactly
+one canonical V3 Swap and one reviewed V4 PoolManager Swap. Both require matching
+exact-block runtime evidence. V3 currencies come from the canonical factory proof;
+V4 currencies require a cryptographic PoolKey hash match to the emitted pool id,
+using bounded candidates from stored calldata. Actual pool Transfer deltas must
+exactly equal the V3 event amounts and the negated V4 event amounts. Native/USDC
+mirror representations must agree exactly and are never added together.
+
+A directed currency graph must connect wallet input to wallet output through
+both proven conversions. Unrelated swaps, unknown factories, changed code,
+malformed events, missing keys, partial amounts, extra pool currencies and routes
+requiring unreconciled hook/flash accounting remain fail-closed. Wallet cash/basket
+classification is still the existing classifier; the new proof annotates only the
+isolated research copy. No production decoder, registry, threshold or authority
+changes. Real preserved Arc BUY/SELL fixtures supplement synthetic failure tests.
+
+Latest Top25 replay: `outputs/research_replay_routes_20260923/`.
+55 additional swap observations now reconcile. Two more wallets have a complete
+but too-short holding result: `0xad52d654964de37a08c6056ae12481168b9e12c6`
+(44 seconds, 81 first-sale samples) and
+`0x75b445c7a9f8275aaeabaffbdf5abb2b588c5430` (111 seconds, 25 samples).
+The batch therefore has **2 within the holding limit, 5 too short, 18 unknown**.
+The two previous passing research dossiers remain unchanged. This is not a list
+of 25 qualified wallets and does not activate copying.
+
+Nine local replacement histories marked COMPLETE were replayed separately in
+`outputs/research_replay_replacements_20260923/`. All nine have raw evidence but
+retain inventory/route ambiguities. The other local replacement candidates have
+196 DECODING and 51 FETCHING campaign headers. They are not complete dossiers.
+This replacement inspection is offline only and grants no paid-wallet scope.
+
+152 targeted deterministic tests pass. This continuation made zero RPC/Nansen
+calls and consumed zero new provider credits. Original histories and earlier
+reports are retained. Continue semantic inventory review, other route cases and
+local replacements; never weaken the two-minute threshold merely to reach 25.

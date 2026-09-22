@@ -19,6 +19,7 @@ from copy_holding_duration import measure,unknown,ADDRESS,HASH
 from copy_holding_pilot import save_new
 from decoder import wallet_token_deltas,classify_trade,hex_value,SWAP_TOPICS,TRANSFER_TOPIC,topic_to_address
 from dex_registry import TrustedDexRegistry
+from copy_route_research import prove_route
 
 NONASSET='0xc6203d86f5efbed7f9512755f3e6132ee50d03d1'
 NONASSET_HASH='0x2825969fa042ed3875c136534af0516ab3226cbe2e1809629dae4642d5070f42'
@@ -91,6 +92,11 @@ def replay_wallet(wallet,run,records,raw,rpc,codes):
                     r=dict(receipt,status=int(receipt['status'],16),blockNumber=p['block'])
                     new=classify_trade(rpc,r,wallet,1e-18,
                         native_value_wei=int(tx.get('value','0x0'),16) if tx.get('from','').lower()==wallet else 0,strict=True)
+                    if len(new)==1 and not new[0].get('confirmation_eligible'):
+                        route=prove_route(tx,r,wallet,new[0],rpc,getattr(rpc,'pool_proofs',{}))
+                        if route:
+                            new[0]['confirmation_eligible']=True
+                            p['research_route_evidence']=route
                     if new and all(t.get('confirmation_eligible') is True for t in new):
                         p['trades']=new;p.pop('error',None)
                         p['inventory_gap']=bool(set(info['deltas'])-CASH-{t['token'].lower() for t in new})
@@ -103,7 +109,8 @@ def replay_wallet(wallet,run,records,raw,rpc,codes):
                 trade['token_amount']=str(abs(delta));trade['quantity_unit']='RAW_TOKEN_UNITS'
                 traded.add(t)
             if original.get('error') and not p.get('error'):
-                changes.append(dict(tx_hash=p['tx_hash'],reason='DIRECT_SWAP_WITH_REVIEWED_EXACT_CODE',before=original,after=deepcopy(p)))
+                reason='RECONCILED_V3_V4_ROUTE' if p.get('research_route_evidence') else 'DIRECT_SWAP_WITH_REVIEWED_EXACT_CODE'
+                changes.append(dict(tx_hash=p['tx_hash'],reason=reason,before=original,after=deepcopy(p)))
         # Isolation uses the entire complete receipt set and both retained/new trades.
         for p in output:
             if p.get('outside_snapshot') or p.get('error') or not p.get('inventory_gap') or p.get('trades'):continue
@@ -130,11 +137,12 @@ def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path):
         any(not isinstance(w,str) or not ADDRESS.fullmatch(w) or w!=w.lower() for w in wallets)):
         raise ValueError('invalid_scope')
     registry=TrustedDexRegistry(registry_path,5042)
-    pool_manifest=json.loads((pool_dir/'manifest.json').read_text())
+    pool_manifest=json.loads((pool_dir/'manifest.json').read_text());pool_proofs={}
     for path in pool_dir.glob('pool_*.json'):
         if hashlib.sha256(path.read_bytes()).hexdigest()!=pool_manifest[path.name]:raise ValueError('pool_digest_mismatch')
         p=json.loads(path.read_text())
-        if canonical_pool(p):registry.entries[p['pool']]=p['runtime_code_hash']
+        if canonical_pool(p):
+            registry.entries[p['pool']]=p['runtime_code_hash'];pool_proofs[p['pool']]=p
     latest=sorted((exact_dir/'runs').glob('*/results_manifest.json'))[-1]
     manifest=json.loads(latest.read_text());exact_codes={}
     for name,digest in manifest.items():
@@ -146,6 +154,7 @@ def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path):
     _,codes,provenance=load_ledger(ledgers,set(registry.entries))
     for k,v in exact_codes.items():codes.setdefault(k,set()).update(v)
     rpc=RawUnitsRPC(registry,{},codes)
+    rpc.pool_proofs=pool_proofs
     out.mkdir(parents=True,exist_ok=False);rows=[]
     with ExitStack() as stack:
         db=stack.enter_context(closing(readonly(campaign/'campaign.sqlite3')))
