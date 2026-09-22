@@ -269,3 +269,31 @@ Omit `--eligible-only` to see pending/excluded rows and their timing status; `--
 always includes the full scope and diagnostics. Recovery exports use the same
 default 120-second gate, configurable explicitly with `--min-holding-seconds`.
 Both commands remain offline: zero Nansen calls/credits and read-only SQLite.
+
+## Explicit public-RPC timing pilot
+
+`copy_holding_pilot.py` is a separate, manually invoked evidence collector, not
+part of the scoring command or supervisor. It requires a scope of exactly three
+wallets with existing version-1 histories. It copies their work into a new local
+database, resumes pagination there, reuses valid cached reads and decoded records,
+and retries ambiguous records through the existing strict decoder. The source
+database is read-only. It never invokes engine selection, identity refresh,
+collector reset, signing, or broadcasting.
+
+Only `https://rpc.arc-scan.org`, `https://rpc.mainnet.arc.io` and the Arcscan
+address-activity route are allowed. Neither Nansen nor Alchemy credentials are
+used. All HTTP attempts including retries count toward the limits (at most 300
+RPC and 12 Arcscan attempts per invocation, at most 600 seconds before new
+requests). Requests are paced at one per second and share the existing public
+fallback limiter. Successful response payloads are durably archived, with a
+manifest, original wallet snapshot, isolated SQLite and raw RPC cache.
+Timing remains UNKNOWN after absent receipts, invalid pages, incomplete decoding,
+inventory gaps or unconfirmed trades. A completed collection is not proof that
+every trade is understood. No result automatically changes the production ranking.
+
+For an explicit continuation, pass the previous isolated `pilot.sqlite3` via
+`--db`, reuse its cache with `--reuse-cache`, choose a **new** output directory,
+and subtract all previous attempts from the original authorized budget. Limits
+are per invocation; the script does not create a new budget authorization.
+Missing/pruned receipts on one public provider must not be interpreted as no
+trade; any alternate provider is explicitly selected and chain-checked at 5042.
