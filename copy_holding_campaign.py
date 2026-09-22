@@ -1,13 +1,14 @@
 """Resumable holding-time research; optional bounded Alchemy, no engine authority."""
 import argparse
 from collections import Counter
-from contextlib import closing
+from contextlib import closing, contextmanager
 import hashlib
 import json
 from pathlib import Path
 import sqlite3
 import time
 import math
+import threading
 
 from arcscan import ArcscanClient
 from copy_candidate_report import shortlist, ADDRESS
@@ -16,9 +17,11 @@ from copy_holding_pilot import ARC_URL, PUBLIC_RPC_URLS, Budget, BoundedSession,
 from historical_collector import HistoricalCollector, parse_page
 from historical_snapshots import decoding_context
 from historical_store import SCHEMA
+from historical_prefetch import read_transaction
+from copy_holding_prefetch import ordered_tasks
 from process_lock import ProcessLock
 from rpc_transport import RPCError, SharedRateLimiter, SharedComputeLimiter
-from copy_holding_transport import (CampaignRPCProvider, AlchemyCampaignSession,
+from copy_holding_transport import (CampaignRPCProvider, AlchemyCampaignSession, CampaignArcRPC,
     require_alchemy_arc, RESERVED_CU_PER_ATTEMPT, RESERVED_USD_PER_MILLION_CU)
 
 QUEUE = """
@@ -85,36 +88,58 @@ class CampaignBudget(Budget):
     def __init__(self,directory,db,settings):
         super().__init__(directory,settings['rpc_cap'],settings['arcscan_cap'],settings['max_seconds'])
         self.db=db
+        self.owner=threading.get_ident()
+        self.db_path=db.execute('PRAGMA database_list').fetchone()[2]
+        self.reservation_lock=threading.RLock()
         self.counts=Counter({r['service']:r['attempts'] for r in db.execute('SELECT * FROM campaign_budget')})
         self.deadline=time.monotonic()+max(0,settings['created_at']+settings['max_seconds']-time.time())
         db.execute('CREATE TABLE IF NOT EXISTS campaign_paid_budget(id INTEGER PRIMARY KEY CHECK(id=1),attempts INTEGER NOT NULL,reserved_cu INTEGER NOT NULL)')
         db.execute('INSERT OR IGNORE INTO campaign_paid_budget VALUES(1,0,0)');db.commit()
         self.paid_cap=settings.get('paid_rpc',{}).get('reserved_cu_cap',0)
 
+    @contextmanager
+    def reservation_db(self):
+        with self.reservation_lock:
+            if threading.get_ident()==self.owner:
+                yield self.db
+            else:
+                if not self.db_path:raise ValueError('parallel_budget_requires_persistent_database')
+                with closing(connect(self.db_path)) as db:yield db
+
+    def record(self,event):
+        with self.reservation_lock:super().record(event)
+
     def take(self,service,method):
         if time.monotonic()>=self.deadline:raise PilotLimit()
-        with self.db:
-            changed=self.db.execute('UPDATE campaign_budget SET attempts=attempts+1 WHERE service=? AND attempts<?',
-                (service,self.limits[service])).rowcount
-        if not changed:raise PilotLimit()
-        self.counts[service]+=1;self.methods[method]+=1
+        with self.reservation_db() as db:
+            if time.monotonic()>=self.deadline:raise PilotLimit()
+            with db:
+                changed=db.execute('UPDATE campaign_budget SET attempts=attempts+1 WHERE service=? AND attempts<?',
+                    (service,self.limits[service])).rowcount
+            if not changed:raise PilotLimit()
+            self.counts[service]+=1;self.methods[method]+=1
+            return sum(self.counts.values())
 
     def paid_available(self):
-        used=self.db.execute('SELECT reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()[0]
+        with self.reservation_db() as db:
+            used=db.execute('SELECT reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()[0]
         return used+RESERVED_CU_PER_ATTEMPT<=self.paid_cap
 
     def take_paid(self,method):
         if time.monotonic()>=self.deadline:raise PilotLimit()
         # Reserve both limits atomically, including HTTP errors and retry attempts.
-        with self.db:
-            self.db.execute('BEGIN IMMEDIATE')
-            rpc_used=self.db.execute("SELECT attempts FROM campaign_budget WHERE service='rpc'").fetchone()[0]
-            paid_used=self.db.execute('SELECT reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()[0]
-            if rpc_used>=self.limits['rpc']:raise PilotLimit()
-            if paid_used+RESERVED_CU_PER_ATTEMPT>self.paid_cap:raise PaidBudgetLimit()
-            self.db.execute("UPDATE campaign_budget SET attempts=attempts+1 WHERE service='rpc'")
-            self.db.execute('UPDATE campaign_paid_budget SET attempts=attempts+1,reserved_cu=reserved_cu+? WHERE id=1',(RESERVED_CU_PER_ATTEMPT,))
-        self.counts['rpc']+=1;self.methods[method]+=1
+        with self.reservation_db() as db:
+            if time.monotonic()>=self.deadline:raise PilotLimit()
+            with db:
+                db.execute('BEGIN IMMEDIATE')
+                rpc_used=db.execute("SELECT attempts FROM campaign_budget WHERE service='rpc'").fetchone()[0]
+                paid_used=db.execute('SELECT reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()[0]
+                if rpc_used>=self.limits['rpc']:raise PilotLimit()
+                if paid_used+RESERVED_CU_PER_ATTEMPT>self.paid_cap:raise PaidBudgetLimit()
+                db.execute("UPDATE campaign_budget SET attempts=attempts+1 WHERE service='rpc'")
+                db.execute('UPDATE campaign_paid_budget SET attempts=attempts+1,reserved_cu=reserved_cu+? WHERE id=1',(RESERVED_CU_PER_ATTEMPT,))
+            self.counts['rpc']+=1;self.methods[method]+=1
+            return sum(self.counts.values())
 
 
 class PaidBudgetLimit(PilotLimit):
@@ -173,27 +198,45 @@ def enable_hybrid(directory,hybrid_directory):
 
 def decode_hashes(db,wallet,hashes,run,rpc,*,early=False,hybrid=None):
     decoder=object.__new__(HistoricalCollector)
-    for h in hashes:
-        with rpc.w3.provider.historical_headers():
+    def read(h,client):
+        with client.w3.provider.historical_headers():
+            bundle=hybrid.get(h,run,client) if hybrid else None
+            if bundle is not None:return bundle,'dune_raw_canonical_rpc'
+            return read_transaction(client,h,run['cutoff_block']),'rpc'
+
+    workers=getattr(rpc,'campaign_read_workers',1)
+    factory=getattr(rpc,'campaign_read_factory',None)
+    # Only transport reads overlap. Classification and SQLite writes stay on the
+    # owner thread and preserve the input prefix on failure.
+    parallel=workers>1 and factory is not None
+    stream=ordered_tasks(hashes,workers,factory,read) if parallel else ((h,None) for h in hashes)
+    with closing(stream):
+        for h,prefetched in stream:
+            persist_decoded(db,wallet,h,run,rpc,decoder,early,hybrid,prefetched)
+
+
+def persist_decoded(db,wallet,h,run,rpc,decoder,early,hybrid,prefetched=None):
+    with rpc.w3.provider.historical_headers():
+        if prefetched is not None:reads,source=prefetched
+        else:
             reads=hybrid.get(h,run,rpc) if hybrid else None
-            source='rpc'
-            if reads is not None:
-                payload=decoder.transaction(wallet,h,run,reads=reads,rpc=rpc)
-                if payload.get('error') or payload.get('inventory_gap'):
-                    # Preserve provider evidence; resolve ambiguity through the
-                    # original transport/decoder, never through Nansen labels.
-                    payload=decoder.transaction(wallet,h,run,rpc=rpc)
-                    source='rpc_after_dune_ambiguity'
-                else:source='dune_raw_canonical_rpc'
-            else:payload=decoder.transaction(wallet,h,run,rpc=rpc)
-        with db:
-            changed=db.execute('UPDATE historical_transactions SET payload=? WHERE wallet=? AND tx_hash=? AND payload IS NULL',
-                       (json.dumps(payload,allow_nan=False),wallet,h)).rowcount
-            if hybrid and changed:
-                db.execute('''CREATE TABLE IF NOT EXISTS campaign_read_sources(
-                    wallet TEXT,tx_hash TEXT,source TEXT,at REAL,PRIMARY KEY(wallet,tx_hash))''')
-                db.execute('INSERT OR IGNORE INTO campaign_read_sources VALUES(?,?,?,?)',(wallet,h,source,time.time()))
-            if early:db.execute('UPDATE campaign_nansen_seeds SET decoded_early=1 WHERE wallet=? AND tx_hash=?',(wallet,h))
+            source='dune_raw_canonical_rpc' if reads is not None else 'rpc'
+        if reads is not None:
+            payload=decoder.transaction(wallet,h,run,reads=reads,rpc=rpc)
+            if source=='dune_raw_canonical_rpc' and (payload.get('error') or payload.get('inventory_gap')):
+                # Preserve provider evidence; resolve ambiguity through the
+                # original transport/decoder, never through Nansen labels.
+                payload=decoder.transaction(wallet,h,run,rpc=rpc)
+                source='rpc_after_dune_ambiguity'
+        else:payload=decoder.transaction(wallet,h,run,rpc=rpc)
+    with db:
+        changed=db.execute('UPDATE historical_transactions SET payload=? WHERE wallet=? AND tx_hash=? AND payload IS NULL',
+                   (json.dumps(payload,allow_nan=False),wallet,h)).rowcount
+        if hybrid and changed:
+            db.execute('''CREATE TABLE IF NOT EXISTS campaign_read_sources(
+                wallet TEXT,tx_hash TEXT,source TEXT,at REAL,PRIMARY KEY(wallet,tx_hash))''')
+            db.execute('INSERT OR IGNORE INTO campaign_read_sources VALUES(?,?,?,?)',(wallet,h,source,time.time()))
+        if early:db.execute('UPDATE campaign_nansen_seeds SET decoded_early=1 WHERE wallet=? AND tx_hash=?',(wallet,h))
 
 
 def advance(db,wallet,rpc,arc,*,batch=10,seed_database=None,context=None,hybrid=None,hybrid_only=False):
@@ -309,11 +352,15 @@ def advisory_allowed(candidate, current, priorities):
     return candidate is not None and (not current or current['wallet'] not in priorities or candidate['wallet'] in priorities)
 
 
-def run(directory,cfg,priority_file=None):
+def run(directory,cfg,priority_file=None,*,workers=2,max_transactions=None,max_run_seconds=None):
+    if type(workers) is not int or not 1<=workers<=4:raise ValueError('campaign_workers_must_be_1_to_4')
+    if max_transactions is not None and (type(max_transactions) is not int or max_transactions<=0):
+        raise ValueError('invalid_transaction_limit')
+    if max_run_seconds is not None and (type(max_run_seconds) is not int or max_run_seconds<=0):
+        raise ValueError('invalid_run_duration')
     out=Path(directory).resolve();settings=json.loads((out/'settings.json').read_text())
     if decoding_context(cfg)!=settings['context']:raise ValueError('campaign_decoder_changed')
     if hashlib.sha256((out/'scope.json').read_bytes()).hexdigest()!=settings['scope_sha256']:raise ValueError('campaign_scope_changed')
-    from rpc import ArcRPC
     from web3 import Web3
     from dex_registry import TrustedDexRegistry
     with ProcessLock(out/'worker.lock'),closing(connect(out/'campaign.sqlite3')) as db:
@@ -327,27 +374,30 @@ def run(directory,cfg,priority_file=None):
             from hybrid_history import HybridReads
             hybrid=HybridReads(settings['hybrid_database'])
         budget=CampaignBudget(out,db,settings)
+        if max_run_seconds is not None:budget.deadline=min(budget.deadline,time.monotonic()+max_run_seconds)
+        initial_decoded=db.execute('SELECT COUNT(payload) FROM historical_transactions').fetchone()[0]
+        initial_attempts=dict(budget.counts);started=time.monotonic()
         cache=PilotCache(out/'rpc_cache.sqlite3',[cfg.rpc_cache_file,
             'outputs/holding_pilot_mainnet_20260922/rpc_cache.sqlite3','outputs/holding_pilot_live_20260922/rpc_cache.sqlite3'])
         clients=[]
+        def make_rpc(url,limiter,paid=False):
+            client=object.__new__(CampaignArcRPC);client.chain_id=5042
+            client.dex_registry=TrustedDexRegistry(cfg.trusted_dex_registry,5042)
+            client.w3=Web3(CampaignRPCProvider(url,5042,limiter,
+                session=AlchemyCampaignSession(budget,url) if paid else BoundedSession(budget,'rpc',url,pace=False),cache=cache))
+            client.campaign_read_workers=workers
+            client.campaign_read_factory=lambda:make_rpc(url,limiter,paid)
+            return client
         for url in ['https://rpc.mainnet.arc.io','https://rpc.arc-scan.org']:
             assert url in PUBLIC_RPC_URLS
-            rpc=object.__new__(ArcRPC);rpc.chain_id=5042
-            rpc.dex_registry=TrustedDexRegistry(cfg.trusted_dex_registry,5042)
-            rpc.w3=Web3(CampaignRPCProvider(url,5042,
-                SharedRateLimiter(cfg.rpc_rate_limit_file+'.fallback',1),
-                session=BoundedSession(budget,'rpc',url),cache=cache))
-            clients.append(rpc)
+            clients.append(make_rpc(url,SharedRateLimiter(cfg.rpc_rate_limit_file+'.fallback',1)))
         labels=['public_primary','public_secondary']
         paid_client=None;paid_disabled=False
         if settings.get('paid_rpc',{}).get('enabled'):
             require_alchemy_arc(cfg.rpc_url)
-            paid_client=object.__new__(ArcRPC);paid_client.chain_id=5042
-            paid_client.dex_registry=TrustedDexRegistry(cfg.trusted_dex_registry,5042)
             limiter=(SharedComputeLimiter(cfg.rpc_rate_limit_file,cfg.rpc_requests_per_second,cfg.rpc_compute_units_per_second)
                 if cfg.rpc_compute_units_per_second else SharedRateLimiter(cfg.rpc_rate_limit_file,cfg.rpc_requests_per_second))
-            paid_client.w3=Web3(CampaignRPCProvider(cfg.rpc_url,5042,limiter,
-                session=AlchemyCampaignSession(budget,cfg.rpc_url),cache=cache))
+            paid_client=make_rpc(cfg.rpc_url,limiter,True)
             clients.insert(0,paid_client);labels.insert(0,'alchemy')
         arc=ArcscanClient(ARC_URL);arc.s.close();arc.s=BoundedSession(budget,'arcscan')
         last_backup=time.monotonic();steps=0;stop='COMPLETE'
@@ -355,6 +405,11 @@ def run(directory,cfg,priority_file=None):
             while True:
                 if (out/'STOP').exists():stop='STOP_REQUESTED';break
                 if time.monotonic()>=budget.deadline:stop='DEADLINE';break
+                batch=10
+                if max_transactions is not None:
+                    remaining=max_transactions-(db.execute('SELECT COUNT(payload) FROM historical_transactions').fetchone()[0]-initial_decoded)
+                    if remaining<=0:stop='TRANSACTION_LIMIT';break
+                    batch=min(batch,remaining)
                 row=next_pending(db,time.time(),priorities)
                 if settings.get('nansen_seed_database') and steps%2==0:
                     from nansen_holding_campaign import ready_wallet
@@ -373,7 +428,7 @@ def run(directory,cfg,priority_file=None):
                 available=[r for r in clients if r is not paid_client or (not paid_disabled and budget.paid_available())]
                 rpc=available[row['failures']%len(available)]
                 try:
-                    result=advance(db,w,rpc,arc,seed_database=settings.get('nansen_seed_database'),context=settings['context'],hybrid=hybrid,hybrid_only=hybrid_only)
+                    result=advance(db,w,rpc,arc,batch=batch,seed_database=settings.get('nansen_seed_database'),context=settings['context'],hybrid=hybrid,hybrid_only=hybrid_only)
                     record_success(db,w,result)
                 except PaidBudgetLimit:
                     paid_disabled=True
@@ -406,7 +461,11 @@ def run(directory,cfg,priority_file=None):
             for rpc in clients:rpc.w3.provider.session.close()
             arc.s.close()
             s=status(db,out);snapshot(db,out/'backups','exit')
-            save_new(out/f'run_{time.time_ns()}.json',dict(stop=stop,steps=steps,states=s['states'],http_attempts=s['http_attempts']))
+            save_new(out/f'run_{time.time_ns()}.json',dict(stop=stop,steps=steps,states=s['states'],http_attempts=s['http_attempts'],
+                workers=workers,elapsed_seconds=time.monotonic()-started,
+                decoded_this_run=s['decoded']-initial_decoded,
+                http_attempts_this_run={k:v-initial_attempts.get(k,0) for k,v in budget.counts.items()},
+                transaction_limit=max_transactions))
             print(json.dumps(dict(stop=stop,states=s['states'])),flush=True)
 
 
@@ -418,6 +477,9 @@ def main(argv=None):
     p.add_argument('--nansen-directory')
     p.add_argument('--hybrid-directory')
     p.add_argument('--priority-file',help='Up to 25 existing campaign wallets to audit first; budgets unchanged')
+    p.add_argument('--workers',type=int,default=2,help='1 to 4 independent read clients; persistence remains ordered')
+    p.add_argument('--max-transactions',type=int,help='Optional bounded measurement; retain all progress')
+    p.add_argument('--max-run-seconds',type=int,help='May shorten, never extend, the campaign deadline')
     p.add_argument('--source',default='data/arc_bot.sqlite3')
     args=p.parse_args(argv)
     if args.action=='status':
@@ -441,7 +503,8 @@ def main(argv=None):
     elif args.action=='enable-paid':
         if args.max_usd is None:p.error('--max-usd required')
         enable_paid(args.directory,SETTINGS,args.max_usd)
-    else:run(args.directory,SETTINGS,args.priority_file)
+    else:run(args.directory,SETTINGS,args.priority_file,workers=args.workers,
+             max_transactions=args.max_transactions,max_run_seconds=args.max_run_seconds)
 
 
 if __name__=='__main__':main()

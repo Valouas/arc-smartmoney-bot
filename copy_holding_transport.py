@@ -2,11 +2,34 @@
 import json
 import re
 import time
+from functools import lru_cache
 from urllib.parse import urlsplit
 
 import requests
 
 from rpc_transport import ResilientRPCProvider, RPCError, READ_METHODS
+from rpc import ArcRPC, ERC20_ABI
+from web3 import Web3
+
+
+class CampaignArcRPC(ArcRPC):
+    """Only metadata actually consumed by historical classify_trade.
+
+    Keep symbol/decimals behavior, failure propagation and per-client caching.
+    The general token_meta implementation used by the other bots is untouched.
+    """
+    @lru_cache(maxsize=4096)
+    def token_meta(self, address):
+        addr=Web3.to_checksum_address(address)
+        c=self.w3.eth.contract(address=addr,abi=ERC20_ABI)
+        out=dict(address=addr,symbol='?',decimals=None)
+        try:out['symbol']=c.functions.symbol().call()
+        except RPCError:raise
+        except Exception:pass
+        try:out['decimals']=int(c.functions.decimals().call())
+        except RPCError:raise
+        except Exception as exc:raise ValueError('token decimals unavailable') from exc
+        return out
 
 # Conservative reservation, higher than all allowed standard RPC method costs.
 # https://www.alchemy.com/docs/reference/compute-unit-costs (checked 2026-09-22)
@@ -64,9 +87,9 @@ class AlchemyCampaignSession(requests.Session):
         payload=json.loads(kwargs['data'])
         if not isinstance(payload,dict) or payload.get('method') not in READ_METHODS:
             raise ValueError('campaign_method_forbidden')
-        name=payload['method'];self.budget.take_paid(name)
+        name=payload['method'];sequence=self.budget.take_paid(name)
         event=dict(service='alchemy',wallet=self.budget.wallet,
-            sequence=self.budget.counts['rpc']+self.budget.counts['arcscan'],state='attempt',
+            sequence=sequence,state='attempt',
             scope=dict(method=name,params=payload.get('params')))
         self.budget.record(event)
         kwargs['allow_redirects']=False

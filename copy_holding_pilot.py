@@ -50,6 +50,7 @@ class Budget:
             raise PilotLimit()
         self.counts[service] += 1  # Every attempt, including transport errors.
         self.methods[method] += 1
+        return sum(self.counts.values())
 
     def record(self, event):
         with (self.directory/'requests.jsonl').open('a', encoding='utf-8') as f:
@@ -59,12 +60,13 @@ class Budget:
 
 
 class BoundedSession(requests.Session):
-    def __init__(self, budget, service, rpc_url=RPC_URL):
+    def __init__(self, budget, service, rpc_url=RPC_URL, *, pace=True):
         super().__init__()
         if rpc_url not in PUBLIC_RPC_URLS:
             raise ValueError('pilot_endpoint_forbidden')
         self.budget, self.service = budget, service
         self.rpc_url = rpc_url
+        self.pace = pace
 
     def request(self, method, url, **kwargs):
         if self.service == 'rpc':
@@ -81,15 +83,16 @@ class BoundedSession(requests.Session):
                 raise ValueError('pilot_endpoint_forbidden')
             name = 'address_activity'
             scope = {'method': name, 'params': kwargs.get('params')}
-        self.budget.take(self.service, name)
-        delay = max(0, 1-(time.monotonic()-self.budget.last_request))
+        sequence = self.budget.take(self.service, name)
+        delay = max(0, 1-(time.monotonic()-self.budget.last_request)) if self.pace else 0
         if time.monotonic()+delay >= self.budget.deadline:
             raise PilotLimit()
-        time.sleep(delay)
-        self.budget.last_request = time.monotonic()
+        if self.pace:
+            time.sleep(delay)
+            self.budget.last_request = time.monotonic()
         # Persist the attempt before touching the network; no URLs/auth headers.
         event = dict(service=self.service, wallet=self.budget.wallet,
-                     sequence=sum(self.budget.counts.values()), scope=scope, state='attempt')
+                     sequence=sequence, scope=scope, state='attempt')
         self.budget.record(event)
         kwargs['allow_redirects'] = False
         kwargs['timeout'] = min(10, max(.1,self.budget.deadline-time.monotonic()))

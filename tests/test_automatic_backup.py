@@ -161,7 +161,13 @@ def test_backup_worker_is_supervised_as_core_role():
 
 
 def test_stale_backup_failure_exits_worker_and_logs_only_category(setup,monkeypatch,capsys):
+    from functools import partial
+    import data_preservation
     cfg,_=setup
+    # These functions bind the repository root at import time, not cwd. Keep
+    # this failure test inside its temporary fixture, never the user's archive.
+    monkeypatch.setattr(data_preservation,'install_all',partial(data_preservation.install_all,root=Path.cwd()))
+    monkeypatch.setattr(data_preservation,'archive_existing',partial(data_preservation.archive_existing,root=Path.cwd()))
     backup.create_backup(cfg,now=1)
     monkeypatch.setattr('config.SETTINGS',cfg)
     monkeypatch.setattr(backup.time,'time',lambda:20000)
