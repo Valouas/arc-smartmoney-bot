@@ -144,13 +144,48 @@ def check_anchor(rpc,run):
     if h.lower()!=run['cutoff_hash'].lower().removeprefix('0x'):raise ValueError('campaign_anchor_mismatch')
 
 
-def advance(db,wallet,rpc,arc,*,batch=10):
+def enable_nansen(directory,nansen_directory):
+    out=Path(directory).resolve();side=Path(nansen_directory).resolve()
+    policy=json.loads((side/'settings.json').read_text())
+    if Path(policy['campaign']).resolve()!=out:raise ValueError('nansen_campaign_mismatch')
+    with ProcessLock(out/'worker.lock'),closing(connect(out/'campaign.sqlite3')) as db:
+        old=(out/'settings.json').read_bytes();settings=json.loads(old)
+        if policy['context']!=settings['context']:raise ValueError('nansen_context_mismatch')
+        snapshot(db,out/'backups','before_nansen_seeds')
+        (out/f'settings_before_nansen_{time.time_ns()}.json').write_bytes(old)
+        settings['nansen_seed_database']=str(side/'campaign.sqlite3')
+        temp=out/'settings.tmp';temp.write_text(json.dumps(settings,indent=2),encoding='utf-8')
+        temp.replace(out/'settings.json')
+
+
+def decode_hashes(db,wallet,hashes,run,rpc,*,early=False):
+    decoder=object.__new__(HistoricalCollector)
+    for h in hashes:
+        with rpc.w3.provider.historical_headers():
+            payload=decoder.transaction(wallet,h,run,rpc=rpc)
+        with db:
+            db.execute('UPDATE historical_transactions SET payload=? WHERE wallet=? AND tx_hash=? AND payload IS NULL',
+                       (json.dumps(payload,allow_nan=False),wallet,h))
+            if early:db.execute('UPDATE campaign_nansen_seeds SET decoded_early=1 WHERE wallet=? AND tx_hash=?',(wallet,h))
+
+
+def advance(db,wallet,rpc,arc,*,batch=10,seed_database=None,context=None):
     """One fully validated page or a small decoder batch. Commit each successful tx."""
     run=dict(db.execute('SELECT * FROM historical_runs WHERE wallet=?',(wallet,)).fetchone())
     if run['version']!=1:raise ValueError('campaign_invalid_generation')
     # Canonical reads are deliberately outside the provider historical cache context.
     check_anchor(rpc,run)
     if run['phase']=='FETCHING':
+        seeds=[]
+        if seed_database:
+            from nansen_holding_campaign import read_seeds
+            seeds=read_seeds(seed_database,wallet,run,context)
+            with db:
+                db.execute('''CREATE TABLE IF NOT EXISTS campaign_nansen_seeds(
+                    wallet TEXT,tx_hash TEXT,added INTEGER,decoded_early INTEGER DEFAULT 0,PRIMARY KEY(wallet,tx_hash))''')
+                for h in seeds:
+                    added=db.execute('INSERT OR IGNORE INTO historical_transactions VALUES(?,?,NULL)',(wallet,h)).rowcount
+                    db.execute('INSERT OR IGNORE INTO campaign_nansen_seeds(wallet,tx_hash,added) VALUES(?,?,?)',(wallet,h,added))
         seen=json.loads(run['seen'])
         page=arc.address_activity(wallet,limit=100,cursor=run['cursor'])
         hashes,nxt=parse_page(page,run['cutoff_block'],seen)
@@ -158,18 +193,21 @@ def advance(db,wallet,rpc,arc,*,batch=10):
             db.executemany('INSERT OR IGNORE INTO historical_transactions VALUES(?,?,NULL)',((wallet,h) for h in hashes))
             db.execute('UPDATE historical_runs SET cursor=?,seen=?,phase=?,error=NULL WHERE wallet=?',
                 (nxt,json.dumps(seen+[nxt] if nxt else seen),'FETCHING' if nxt else 'DECODING',wallet))
+        # Decode advisory hashes early, but never publish completeness while the
+        # authoritative Arcscan pagination is unfinished. Existing payloads stay intact.
+        early=[]
+        for h in seeds:
+            if len(early)>=batch:break
+            if db.execute('SELECT 1 FROM historical_transactions WHERE wallet=? AND tx_hash=? AND payload IS NULL',(wallet,h)).fetchone():
+                early.append(h)
+        decode_hashes(db,wallet,early,run,rpc,early=True)
         return None
     missing=db.execute('SELECT tx_hash FROM historical_transactions WHERE wallet=? AND payload IS NULL ORDER BY tx_hash LIMIT ?',
         (wallet,batch)).fetchall()
     if missing:
         # A COMPLETE header with missing payloads must cease being complete before work.
         with db:db.execute("UPDATE historical_runs SET phase='DECODING',error=NULL WHERE wallet=?",(wallet,))
-        decoder=object.__new__(HistoricalCollector)
-        for row in missing:
-            with rpc.w3.provider.historical_headers():
-                payload=decoder.transaction(wallet,row['tx_hash'],run,rpc=rpc)
-            with db:db.execute('UPDATE historical_transactions SET payload=? WHERE wallet=? AND tx_hash=? AND payload IS NULL',
-                (json.dumps(payload,allow_nan=False),wallet,row['tx_hash']))
+        decode_hashes(db,wallet,[row['tx_hash'] for row in missing],run,rpc)
     if db.execute('SELECT 1 FROM historical_transactions WHERE wallet=? AND payload IS NULL LIMIT 1',(wallet,)).fetchone():return None
     check_anchor(rpc,run)
     with db:db.execute("UPDATE historical_runs SET phase='COMPLETE',completed_at=?,error=NULL WHERE wallet=?",(int(time.time()),wallet))
@@ -184,11 +222,14 @@ def status(db,out):
         r.update(live_signal_authority=False,paper_selected=False)
     paid=(db.execute('SELECT attempts,reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='campaign_paid_budget'").fetchone() else (0,0))
+    seeds=(db.execute('SELECT COUNT(*),COALESCE(SUM(added),0),COALESCE(SUM(decoded_early),0) FROM campaign_nansen_seeds').fetchone()
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='campaign_nansen_seeds'").fetchone() else (0,0,0))
     result=dict(updated_at=time.time(),total=len(rows),states=dict(Counter(r['state'] for r in rows)),
         http_attempts={r['service']:r['attempts'] for r in db.execute('SELECT * FROM campaign_budget')},
         transactions=db.execute('SELECT COUNT(*) FROM historical_transactions').fetchone()[0],
         decoded=db.execute('SELECT COUNT(*) FROM historical_transactions WHERE payload IS NOT NULL').fetchone()[0],
         nansen_http_calls=0,nansen_credits_consumed=0,alchemy_http_calls=paid[0],
+        nansen_seed_hashes=seeds[0],nansen_new_hashes=seeds[1],nansen_early_decoded=seeds[2],
         alchemy_reserved_cu=paid[1],alchemy_reserved_usd=paid[1]/1_000_000*RESERVED_USD_PER_MILLION_CU,
         production_database_modified=False,rows=rows)
     temp=Path(out)/'status.tmp';temp.write_text(json.dumps(result,ensure_ascii=False,allow_nan=False,indent=2),encoding='utf-8')
@@ -234,6 +275,9 @@ def run(directory,cfg):
                 if (out/'STOP').exists():stop='STOP_REQUESTED';break
                 if time.monotonic()>=budget.deadline:stop='DEADLINE';break
                 row=db.execute("SELECT * FROM campaign_queue WHERE state='PENDING' AND next_attempt<=? ORDER BY turns,priority LIMIT 1",(time.time(),)).fetchone()
+                if settings.get('nansen_seed_database') and steps%2==0:
+                    from nansen_holding_campaign import ready_wallet
+                    row=ready_wallet(db,settings['nansen_seed_database'],settings['context'],time.time()) or row
                 if not row:
                     if db.execute("SELECT 1 FROM campaign_queue WHERE state='PENDING'").fetchone():time.sleep(5);continue
                     break
@@ -242,7 +286,7 @@ def run(directory,cfg):
                 available=[r for r in clients if r is not paid_client or (not paid_disabled and budget.paid_available())]
                 rpc=available[row['failures']%len(available)]
                 try:
-                    result=advance(db,w,rpc,arc)
+                    result=advance(db,w,rpc,arc,seed_database=settings.get('nansen_seed_database'),context=settings['context'])
                     if result:
                         state='VERIFIED' if result['holding_duration_eligible'] else 'TOO_SHORT' if result['holding_duration_status']=='EXCLUDED_SHORT_HOLDING' else 'REVIEW_REQUIRED'
                         with db:db.execute('UPDATE campaign_queue SET state=?,result=?,reason=?,turns=turns+1 WHERE wallet=?',
@@ -266,7 +310,8 @@ def run(directory,cfg):
                     print(json.dumps(dict(wallet=w,category=category,attempt=failures,provider=labels[clients.index(rpc)])),flush=True)
                 steps+=1
                 s=status(db,out)
-                progress={k:s[k] for k in ('updated_at','states','decoded','transactions','http_attempts','alchemy_http_calls','alchemy_reserved_usd')}
+                progress={k:s[k] for k in ('updated_at','states','decoded','transactions','http_attempts','alchemy_http_calls','alchemy_reserved_usd',
+                    'nansen_seed_hashes','nansen_new_hashes','nansen_early_decoded')}
                 progress['chain_id_cache_hits']=sum(r.w3.provider.chain_cache_hits for r in clients)
                 print(json.dumps(progress),flush=True)
                 if time.monotonic()-last_backup>=1800:
@@ -284,9 +329,10 @@ def run(directory,cfg):
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=['prepare','run','status','enable-paid'])
+    p.add_argument('action',choices=['prepare','run','status','enable-paid','enable-nansen'])
     p.add_argument('--directory',required=True);p.add_argument('--scope')
     p.add_argument('--max-usd',type=float)
+    p.add_argument('--nansen-directory')
     p.add_argument('--source',default='data/arc_bot.sqlite3')
     args=p.parse_args(argv)
     if args.action=='status':
@@ -301,6 +347,9 @@ def main(argv=None):
     if args.action=='prepare':
         if not args.scope:p.error('--scope required')
         prepare(args.source,args.scope,args.directory,SETTINGS)
+    elif args.action=='enable-nansen':
+        if not args.nansen_directory:p.error('--nansen-directory required')
+        enable_nansen(args.directory,args.nansen_directory)
     elif args.action=='enable-paid':
         if args.max_usd is None:p.error('--max-usd required')
         enable_paid(args.directory,SETTINGS,args.max_usd)
