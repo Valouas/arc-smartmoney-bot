@@ -150,3 +150,15 @@ def test_infrastructure_scope_rejected_before_creating_output(prepared):
     Path(cfg.trusted_dex_registry).write_text(json.dumps(dict(chain_id=5042,emitters=[dict(address=W)])))
     with pytest.raises(ValueError,match='infrastructure'):prepare(src,scope,out,cfg)
     assert not out.exists()
+
+
+def test_success_clears_consecutive_failures_without_promoting_partial_history(prepared):
+    from copy_holding_campaign import record_success
+    src,scope,out,cfg=prepared;prepare(src,scope,out,cfg)
+    with connect(out/'campaign.sqlite3') as db:
+        db.execute("UPDATE campaign_queue SET failures=2,next_attempt=500,reason='timeout'");db.commit()
+        before=db.execute('SELECT phase,cursor FROM historical_runs').fetchone()[:]
+        record_success(db,W,None)
+        assert db.execute('SELECT state,failures,next_attempt,reason FROM campaign_queue').fetchone()[:]==('PENDING',0,0,None)
+        assert db.execute('SELECT phase,cursor FROM historical_runs').fetchone()[:]==before
+        assert not stored_holding(db,W)['holding_duration_eligible']

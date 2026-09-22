@@ -85,6 +85,52 @@ def test_partial_stream_timeout_preserved_and_stops_billing(campaign):
     assert (side/'evidence'/'response_0001.body').read_bytes()==b'partial-paid-evidence'
 
 
+def test_explicit_transport_resume_keeps_uncertain_attempt_charged_to_cap(campaign):
+    _,side,_=campaign;http=Mock();http.post.side_effect=requests.Timeout('secret')
+    with n.connect(side/'campaign.sqlite3') as db:
+        with pytest.raises(ValueError):n.fetch(db,side,row(db),'key',http)
+        db.execute("UPDATE scope SET state='REVIEW_REQUIRED',reason='provider_or_schema_error'");db.commit()
+        before=dict(db.execute('SELECT * FROM attempts').fetchone())
+    n.resume_transport(side)
+    with n.connect(side/'campaign.sqlite3') as db:
+        assert dict(db.execute('SELECT * FROM attempts WHERE id=1').fetchone())==before
+        assert db.execute('SELECT attempts,used,cap,halt FROM policy').fetchone()[:]==(1,0,2,None)
+        assert row(db)['page']==1 and row(db)['state']=='PENDING'
+        assert not n.unresolved_attempts(db)
+        assert n.reserve(db,row(db))==2
+        with pytest.raises(ValueError,match='budget'):n.reserve(db,row(db))
+
+
+def test_transport_resume_refuses_pricing_halts(campaign):
+    _,side,_=campaign
+    with n.connect(side/'campaign.sqlite3') as db:
+        db.execute("UPDATE policy SET halt='billing_unverified_or_changed'")
+    with pytest.raises(ValueError,match='not_transport'):n.resume_transport(side)
+
+
+@pytest.mark.parametrize('succeeds',[True,False])
+def test_bounded_automatic_transport_retry_keeps_budget_and_partial_evidence(campaign,monkeypatch,succeeds):
+    _,side,_=campaign
+    with n.connect(side/'campaign.sqlite3') as db:db.execute('UPDATE policy SET cap=3')
+    settings=json.loads((side/'settings.json').read_text());settings['cap']=3
+    (side/'settings.json').write_text(json.dumps(settings))
+    monkeypatch.setattr(n.time,'sleep',lambda _:None)
+    calls=[]
+    def post(*args,**kwargs):
+        calls.append(kwargs)
+        if not succeeds or len(calls)<3:raise requests.Timeout('secret')
+        return response(page())
+    monkeypatch.setattr(requests.Session,'post',post)
+    n.run(side,'key')
+    with n.connect(side/'campaign.sqlite3') as db:
+        assert db.execute('SELECT attempts FROM policy').fetchone()[0]==3
+        assert len(calls)==3
+        assert row(db)['state']==('PAGES_COMPLETE' if succeeds else 'REVIEW_REQUIRED')
+        assert db.execute('SELECT count(*) FROM seeds').fetchone()[0]==int(succeeds)
+        assert db.execute("SELECT count(*) FROM attempts WHERE state='UNCERTAIN'").fetchone()[0]==(2 if succeeds else 3)
+        assert bool(db.execute('SELECT halt FROM policy').fetchone()[0]) is not succeeds
+
+
 @pytest.mark.parametrize('bad',['chain','pagination','duplicate'])
 def test_bad_page_never_advances_or_invents_trades(campaign,bad):
     _,side,_=campaign;p=page()

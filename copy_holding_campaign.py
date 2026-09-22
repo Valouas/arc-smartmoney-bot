@@ -237,6 +237,17 @@ def status(db,out):
     return result
 
 
+def record_success(db,wallet,result):
+    """The retry threshold counts consecutive failed turns, not lifetime errors."""
+    with db:
+        if result:
+            state='VERIFIED' if result['holding_duration_eligible'] else 'TOO_SHORT' if result['holding_duration_status']=='EXCLUDED_SHORT_HOLDING' else 'REVIEW_REQUIRED'
+            db.execute('UPDATE campaign_queue SET state=?,result=?,reason=?,turns=turns+1,failures=0,next_attempt=0 WHERE wallet=?',
+                       (state,json.dumps(result),result['holding_duration_reason'],wallet))
+        else:
+            db.execute('UPDATE campaign_queue SET turns=turns+1,reason=NULL,failures=0,next_attempt=0 WHERE wallet=?',(wallet,))
+
+
 def run(directory,cfg):
     out=Path(directory).resolve();settings=json.loads((out/'settings.json').read_text())
     if decoding_context(cfg)!=settings['context']:raise ValueError('campaign_decoder_changed')
@@ -287,12 +298,7 @@ def run(directory,cfg):
                 rpc=available[row['failures']%len(available)]
                 try:
                     result=advance(db,w,rpc,arc,seed_database=settings.get('nansen_seed_database'),context=settings['context'])
-                    if result:
-                        state='VERIFIED' if result['holding_duration_eligible'] else 'TOO_SHORT' if result['holding_duration_status']=='EXCLUDED_SHORT_HOLDING' else 'REVIEW_REQUIRED'
-                        with db:db.execute('UPDATE campaign_queue SET state=?,result=?,reason=?,turns=turns+1 WHERE wallet=?',
-                            (state,json.dumps(result),result['holding_duration_reason'],w))
-                    else:
-                        with db:db.execute('UPDATE campaign_queue SET turns=turns+1,reason=NULL WHERE wallet=?',(w,))
+                    record_success(db,w,result)
                 except PaidBudgetLimit:
                     paid_disabled=True
                     status(db,out)

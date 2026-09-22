@@ -138,7 +138,7 @@ def reserve(db,row):
         db.execute('BEGIN IMMEDIATE')
         p=db.execute('SELECT * FROM policy').fetchone()
         if p['halt'] or p['attempts']>=p['cap']:raise ValueError('budget_or_halt')
-        if db.execute("SELECT 1 FROM attempts WHERE state='INFLIGHT'").fetchone():
+        if unresolved_attempts(db):
             raise ValueError('uncertain_previous_attempt')
         attempt=p['attempts']+1
         db.execute('UPDATE policy SET attempts=?',(attempt,))
@@ -147,13 +147,63 @@ def reserve(db,row):
     return attempt
 
 
+def unresolved_attempts(db):
+    resolved=(set(r[0] for r in db.execute('SELECT attempt_id FROM transport_resolutions'))
+              if db.execute("SELECT 1 FROM sqlite_master WHERE name='transport_resolutions'").fetchone() else set())
+    return [r for r in db.execute("SELECT * FROM attempts WHERE state IN ('INFLIGHT','UNCERTAIN')") if r['id'] not in resolved]
+
+
+def resume_transport(directory):
+    """Explicit operator recovery: unknown requests remain reserved and immutable."""
+    out=Path(directory).resolve()
+    with ProcessLock(out/'worker.lock'),closing(connect(out/'campaign.sqlite3')) as db:
+        resolve_transport(db,out)
+        publish(db,out)
+
+
+def resolve_transport(db,out,*,automatic=False):
+    """Accept possible charge of each uncertain request, never its partial data."""
+    policy=dict(db.execute('SELECT * FROM policy').fetchone())
+    if policy['halt'] not in ('transport_uncertain','uncertain_previous_attempt'):
+        raise ValueError('not_transport_halt')
+    pending=unresolved_attempts(db)
+    if not pending:raise ValueError('no_uncertain_attempt')
+    for r in pending:
+        billing=json.loads(r['billing'] or '{}')
+        if any(int(billing[k]) not in (0,1) for k in ('x-nansen-credits-cost','x-nansen-credits-used') if k in billing):
+            raise ValueError('pricing_requires_review')
+        if r['status'] not in (None,200):raise ValueError('http_failure_requires_review')
+    backup(db,out)
+    record=dict(at=time.time(),action='bounded_transport_retry' if automatic else 'explicit_transport_resume',attempt_ids=[r['id'] for r in pending],
+                policy_before=policy,unknown_attempts_remain_reserved=True)
+    write_new(out/f'transport_resume_{time.time_ns()}.json',record)
+    with db:
+        db.execute('CREATE TABLE IF NOT EXISTS transport_resolutions(attempt_id INTEGER PRIMARY KEY,resolved_at REAL)')
+        for r in pending:
+            db.execute('INSERT INTO transport_resolutions VALUES(?,?)',(r['id'],record['at']))
+            db.execute("""UPDATE scope SET state='PENDING',reason=NULL WHERE wallet=? AND page=?
+               AND state='REVIEW_REQUIRED' AND reason='provider_or_schema_error'""",(r['wallet'],r['page']))
+        db.execute('UPDATE policy SET halt=NULL')
+    # attempts/used/cap and original bodies/states are never rewritten.
+
+
+def retry_transport(db,out,row):
+    policy=db.execute('SELECT * FROM policy').fetchone()
+    tries=db.execute('SELECT COUNT(*) FROM attempts WHERE wallet=? AND page=?',(row['wallet'],row['page'])).fetchone()[0]
+    if policy['halt']!='transport_uncertain' or tries>=3 or policy['attempts']>=policy['cap']:
+        return False
+    resolve_transport(db,out,automatic=True)
+    time.sleep(2**tries)
+    return True
+
+
 def fetch(db,out,row,key,session):
     attempt=reserve(db,row)
     path=Path(out)/'evidence'/f'response_{attempt:04d}.body'
     status=None;billing={};raw=bytearray();failure=None
     try:
         with session.post(URL,headers={'apikey':key,'Accept':'application/json'},json=request_body(row),
-                          timeout=(5,20),allow_redirects=False,stream=True) as response:
+                          timeout=(5,45),allow_redirects=False,stream=True) as response:
             status=response.status_code
             billing={k.lower():v for k,v in response.headers.items() if k.lower().startswith('x-nansen-credits-')}
             # Persist partial bytes even when receiving the stream fails.
@@ -161,8 +211,10 @@ def fetch(db,out,row,key,session):
                 for chunk in response.iter_content(16384):
                     f.write(chunk);f.flush();raw.extend(chunk)
                     if len(raw)>4*1024*1024:raise ValueError('payload_size_limit')
-    except requests.RequestException:
+    except (requests.Timeout,requests.ConnectionError):
         failure='transport_uncertain'
+    except requests.RequestException:
+        failure='transport_error'
     except ValueError:
         failure='payload_size_limit'
     digest=hashlib.sha256(raw).hexdigest()
@@ -245,7 +297,7 @@ def run(directory,key):
     out=Path(directory).resolve();cfg=json.loads((out/'settings.json').read_text())
     with ProcessLock(out/'worker.lock'),closing(connect(out/'campaign.sqlite3')) as db,requests.Session() as session:
         last_backup=time.monotonic();last_request=0
-        if db.execute("SELECT 1 FROM attempts WHERE state IN ('INFLIGHT','UNCERTAIN')").fetchone():
+        if unresolved_attempts(db):
             with db:db.execute("UPDATE policy SET halt=COALESCE(halt,'uncertain_previous_attempt')")
         try:
             if not db.execute('SELECT halt FROM policy').fetchone()[0]:recover_received(db)
@@ -269,7 +321,9 @@ def run(directory,key):
                     accept(db,row,raw)
                 except (ValueError,TypeError,KeyError):
                     with db:db.execute("UPDATE scope SET state='REVIEW_REQUIRED',reason='provider_or_schema_error' WHERE wallet=?",(row['wallet'],))
-                    if db.execute('SELECT halt FROM policy').fetchone()[0]:break
+                    if db.execute('SELECT halt FROM policy').fetchone()[0]:
+                        if retry_transport(db,out,row):continue
+                        break
                 publish(db,out)
                 if time.monotonic()-last_backup>300:backup(db,out);last_backup=time.monotonic()
         finally:
@@ -279,13 +333,14 @@ def run(directory,key):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=['prepare','run','status'])
+    p.add_argument('action',choices=['prepare','run','status','resume-transport'])
     p.add_argument('--directory',required=True);p.add_argument('--campaign')
     p.add_argument('--max-credits',type=int);p.add_argument('--archive',action='append',default=[])
     a=p.parse_args()
     if a.action=='prepare':
         if not a.campaign or a.max_credits is None:p.error('--campaign and --max-credits required')
         prepare(a.campaign,a.directory,a.max_credits,a.archive)
+    elif a.action=='resume-transport':resume_transport(a.directory)
     elif a.action=='status':
         with closing(readonly(Path(a.directory)/'campaign.sqlite3')) as db:publish(db,a.directory)
     else:

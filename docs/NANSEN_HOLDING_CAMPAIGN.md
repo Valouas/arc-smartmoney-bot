@@ -10,8 +10,10 @@ refresh PnL, or grant paper/live authority.
 - Persistently reserve one attempt in SQLite before each HTTP submission.
 - Maximum 2,000 additional attempts at the currently verified price of one
   credit per address-transactions request. Prior pilot pages are free cache hits.
-- Read actual billing headers; stop on missing or changed pricing, transport
-  uncertainty, HTTP errors or an account balance of 100 credits or less.
+- Read actual billing headers; stop on missing or changed pricing (outside a
+  transport timeout), HTTP errors or an account balance of 100 credits or less.
+  Timeout/connection failures may retry up to three total attempts per page,
+  with exponential waits and every attempt permanently reserved in the cap.
   Provider pricing is external: an already-submitted request cannot be undone.
 - Never recharge or purchase credits. The cap applies to this campaign, not to
   unrelated account traffic. A process lock prevents duplicate workers.
@@ -20,7 +22,8 @@ refresh PnL, or grant paper/live authority.
   Durable SQLite contains each request and response. Keep all generations;
   snapshot at preparation, every five minutes while progressing, and shutdown.
 - On restart, reuse a fully persisted response even if page indexing had not
-  finished. An uncertain in-flight request blocks further spending.
+  finished. An uncertain in-flight request discovered after a crash blocks
+  further spending until explicit review.
 
 ## Integration
 
@@ -85,3 +88,31 @@ budget. Resume the same directory only after reviewing any recorded halt.
 Alchemy retains its previously authorized $5 conservative reserved cap, without
 resetting its usage. Production scoring, promotion and paper configuration are
 unchanged.
+
+### Explicit recovery after a transport timeout
+
+After reviewing a transport-only halt, use the existing directory:
+
+```powershell
+.\.venv\Scripts\python.exe nansen_holding_campaign.py resume-transport --directory data/nansen_holding_campaign_20260922_2000
+.\.venv\Scripts\python.exe -u nansen_holding_campaign.py run --directory data/nansen_holding_campaign_20260922_2000
+```
+
+The recovery snapshots the database, appends an audit and an acknowledgement of
+the uncertain attempt, and only reopens the affected unfinished page. The original
+request state/body remains unchanged. Every uncertain attempt still occupies one
+slot in the original cap; `used` continues to mean confirmed provider charges.
+Pricing/authentication/other halts cannot be bypassed with this command. The
+original deadline also remains unchanged. Runtime timeout/connection errors now
+retry at most three attempts per page, with a 45-second read timeout. Each retry
+archives and acknowledges the possible charge of the previous failed request;
+partial response data is never accepted. Three failures stop the campaign.
+
+On 22 September, attempt 494 timed out without billing headers. It remained
+reserved on explicit recovery, so only 1,506 further attempts were available.
+The three RPC transactions that had blocked local reconstruction were fetched
+and decoded through Alchemy under the existing budget, with canonical-anchor
+checks before and after. Their prior rows/checkpoints were archived before
+requeueing. Two decoded transactions retained ambiguity flags; this recovery
+does not approve those wallets. The reconstruction failure counter now resets
+after successful turns, ensuring the block threshold counts consecutive errors.
