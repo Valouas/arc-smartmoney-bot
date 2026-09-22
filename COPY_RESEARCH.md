@@ -1,5 +1,69 @@
 # Shortlist copy research (offline only)
 
+## Incomplete-position research scenarios (explicit offline report)
+
+`copy_recovery_report.py` leaves the strict score/ROI in `copy_candidate_report.py`
+unchanged. It reads the selected wallets' stored Nansen snapshots and produces a
+separate report, never consumed by promotion, wallet selection or execution.
+The default scope is the existing shortlist. To examine a different previously
+saved scope, pass its explicit shortlist-format file; no automatic broad scan or
+provider request is added. The owner's global research scope can be reused:
+
+```powershell
+.\.venv\Scripts\python.exe copy_recovery_report.py --shortlist outputs/copy_global_check_20260922/global_research_scope.json --output-dir outputs/copy_recovery_next_review
+```
+
+The output directory must be new. Existing evidence is never overwritten. The
+JSON preserves strict metrics, original snapshot key/date/flags, all omitted
+positions, recovery reasons and a token review queue grouped by token AND original
+historical window. The HTML prioritizes single-position blockers, then 2–3.
+There is no minimum activity requirement or contract-wallet exclusion. Reviewed
+DEX infrastructure remains excluded. All recovery rows have false paper/live
+authority; the original `copy_research_eligible` remains false for partial data.
+
+For an open position without a usable price/open view, the scenario assumes its
+remaining value is zero **only if** costs, sales and quantities reconcile:
+
+* `implied_sold_cost = sold_usd - realized_pnl`
+* `remaining_cost = bought_usd - implied_sold_cost`
+* `scenario_pnl = realized_pnl - remaining_cost = sold_usd - bought_usd`
+
+Both implied costs must be nonnegative. Positive finite purchase costs and bought
+quantities are required. Bought quantity must equal sold plus held quantity within
+floating-point tolerance; transfers/rebases/incomplete inventory are not inferred
+away. Overlapping views must agree on costs, sales, realized PnL and quantities.
+When no quantity was sold, nonzero sales/realized PnL are inconsistent. The sources
+are never edited and no artificial market price is inserted.
+
+Known positions retain their observed total PnL, including latent losses. Wallet
+scenario metrics exist only if **every** position is either source-evaluable or
+supported by this zero-value accounting scenario. Zero-cost receipts, missing
+costs and contradictions remain unresolved: no infinite ROI, no omission of an
+unprofitable/unknown position, no scenario promotion. Source aggregate summaries
+or current market prices never fill historical gaps.
+
+The `prudent_scenario` is explicitly hypothetical, based on provider accounting,
+not a verified return or guaranteed lower bound after fees/transfer corrections.
+Its experimental score uses the existing formula but is not a mathematical lower
+bound on another scenario's score (concentration can change). Original strict
+score and ROI stay null where they were null. `research_recovery_candidate`
+requires scenario ROI >=20% and mean operations/day <=50 by default, using the
+same user criteria. It is an audit priority only, not a funded/validated wallet.
+
+Known-capital coverage is source-evaluable purchase cost / total deduplicated
+purchase cost. It is unavailable if any cost is zero/unknown; it does not claim
+full portfolio coverage. Additional capital-weighted hit rate/return, profit
+factor and median cumulative token purchase cost are **position-level** metrics,
+not per-buy sizing or evidence of repeated successful trades. No losses means an
+unavailable profit factor, not infinity. Current funding, liquidity, slippage,
+delay sensitivity and trade chronology remain explicitly unverified/unavailable.
+
+On the first owner-requested global run, 7,554 stored-scope addresses produced
+3,928 unchanged strict scores and 2,083 hypothetical scenarios among 3,239 partial
+wallets. 442 scenario wallets passed ROI/frequency, including 247 single-position
+cases. 1,156 partial wallets remained unresolved. These counts describe one saved
+run, not guaranteed recoverable profits. No Nansen credit was consumed.
+
 Run from the repository directory:
 
 ```powershell
