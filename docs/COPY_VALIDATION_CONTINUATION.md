@@ -70,3 +70,39 @@ review route attribution and unrelated-token inventory accounting with explicit
 proofs. Preserve the current fail-closed result until a reviewed reconstruction
 passes the unchanged holding calculation. Do not restart a complete campaign,
 expand the paid wallet scope, or activate paper/live as a side effect.
+
+## First hourly continuation
+
+The 85 pool probes completed: 74 reciprocal memberships in the official V3
+factory, 9 different factories and 2 invalid responses. Cost reservation: 45,600
+CU ($0.0456 conservative), 456 attempts. All 74 also match the canonical CREATE2
+address derived from their factory, ordered currencies, fee and the init-code
+hash in [Uniswap PoolAddress.sol](https://raw.githubusercontent.com/Uniswap/v3-periphery/main/contracts/libraries/PoolAddress.sol).
+This strengthens deployment evidence; it does not certify every historical code
+response or an arbitrary multi-hop route. The 9 different factories remain
+unreviewed, including the first hop of wallet `0x0e50…de08`.
+
+Two targeted code reads for `0xc6203d86f5efbed7f9512755f3e6132ee50d03d1`
+(3 attempts including chain identity) returned the same runtime hash:
+`0x2825969fa042ed3875c136534af0516ab3226cbe2e1809629dae4642d5070f42`.
+Its 1,667-byte runtime contains no storage reads/writes, external calls, creation
+or self-destruct instructions when PUSH data is skipped. It emits logs and has
+metadata selectors; Transfer topics alone do not establish ERC20 inventory
+changes. The observation is diagnostic, not an automatic event deletion.
+
+`copy_exact_code_research.py` now prepares a fixed plan from digest-checked stored
+receipts of the authorized 25 wallets. There are 2,110 address/block pairs:
+471 canonical pool pairs and 1,639 token pairs attached to existing inventory
+flags (87 distinct token addresses). It reuses 76 prior code observations, and
+collects missing exact-block evidence with a maximum of 2,500 attempts / 3,600
+seconds / $0.25 conservative reservation per run, still under the unchanged
+cumulative $10 campaign cap. It never enumerates new wallets or transactions.
+Successful and failed observations are saved individually; a resume skips them.
+No Nansen request, scoring write, trusted registry change or paper/live authority.
+
+Results are under `outputs/exact_code_research_20260922`; completed runs include
+budget deltas and SHA-256 manifests. Opcode inventories deliberately inspect all
+bytecode, including metadata (which may cause false negatives), and never use
+absence of instructions as an automatic token exclusion policy. Remaining work
+is semantic inventory review and reviewed route reconstruction on isolated copies,
+then the unchanged holding calculation and dated funds/performance checks.
