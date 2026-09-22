@@ -96,6 +96,11 @@ class CampaignBudget(Budget):
         db.execute('CREATE TABLE IF NOT EXISTS campaign_paid_budget(id INTEGER PRIMARY KEY CHECK(id=1),attempts INTEGER NOT NULL,reserved_cu INTEGER NOT NULL)')
         db.execute('INSERT OR IGNORE INTO campaign_paid_budget VALUES(1,0,0)');db.commit()
         self.paid_cap=settings.get('paid_rpc',{}).get('reserved_cu_cap',0)
+        self.paid_wallets=settings.get('paid_rpc',{}).get('wallets')
+        if self.paid_wallets is not None and (not isinstance(self.paid_wallets,list) or
+                not 1<=len(self.paid_wallets)<=25 or any(not isinstance(w,str) or
+                not ADDRESS.fullmatch(w) or w!=w.lower() for w in self.paid_wallets)):
+            raise ValueError('invalid_paid_wallet_scope')
 
     @contextmanager
     def reservation_db(self):
@@ -121,12 +126,14 @@ class CampaignBudget(Budget):
             return sum(self.counts.values())
 
     def paid_available(self):
+        if self.paid_wallets is not None and self.wallet not in self.paid_wallets:return False
         with self.reservation_db() as db:
             used=db.execute('SELECT reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()[0]
         return used+RESERVED_CU_PER_ATTEMPT<=self.paid_cap
 
     def take_paid(self,method):
         if time.monotonic()>=self.deadline:raise PilotLimit()
+        if self.paid_wallets is not None and self.wallet not in self.paid_wallets:raise PaidBudgetLimit()
         # Reserve both limits atomically, including HTTP errors and retry attempts.
         with self.reservation_db() as db:
             if time.monotonic()>=self.deadline:raise PilotLimit()
@@ -146,19 +153,22 @@ class PaidBudgetLimit(PilotLimit):
     pass
 
 
-def enable_paid(directory,cfg,max_usd):
+def enable_paid(directory,cfg,max_usd,priority_file=None):
     if isinstance(max_usd,bool) or not math.isfinite(max_usd) or not 0<max_usd<=20:
         raise ValueError('paid_budget_must_be_between_0_and_20_usd')
     require_alchemy_arc(cfg.rpc_url)
     out=Path(directory).resolve()
     with ProcessLock(out/'worker.lock'):
         old=(out/'settings.json').read_bytes();settings=json.loads(old)
+        with closing(connect(out/'campaign.sqlite3')) as db:
+            wallets=list(load_priorities(priority_file,db)) if priority_file else settings.get('paid_rpc',{}).get('wallets')
         (out/f'settings_before_paid_{time.time_ns()}.json').write_bytes(old)
         settings['paid_rpc']=dict(enabled=True,authorized_max_usd=max_usd,
             reserved_cu_cap=int(max_usd*1_000_000/RESERVED_USD_PER_MILLION_CU),
             reserved_cu_per_attempt=RESERVED_CU_PER_ATTEMPT,
             reserved_usd_per_million_cu=RESERVED_USD_PER_MILLION_CU,
             configured_at=time.time())
+        if wallets is not None:settings['paid_rpc']['wallets']=wallets
         temp=out/'settings.tmp';temp.write_text(json.dumps(settings,indent=2),encoding='utf-8');temp.replace(out/'settings.json')
         # Credentials stay in .env/in memory; previous usage is never reset.
         save_new(out/f'paid_policy_{time.time_ns()}.json',settings['paid_rpc'])
@@ -339,11 +349,12 @@ def load_priorities(path, db):
     return wallets
 
 
-def next_pending(db, now, priorities=()):
+def next_pending(db, now, priorities=(), priority_only=False):
     if priorities:
         row=db.execute("SELECT * FROM campaign_queue WHERE state='PENDING' AND next_attempt<=? AND wallet IN ("+
             ','.join('?' for _ in priorities)+") ORDER BY turns,priority LIMIT 1",(now,*priorities)).fetchone()
         if row:return row
+    if priority_only:return None
     return db.execute("SELECT * FROM campaign_queue WHERE state='PENDING' AND next_attempt<=? ORDER BY turns,priority LIMIT 1",(now,)).fetchone()
 
 
@@ -352,7 +363,9 @@ def advisory_allowed(candidate, current, priorities):
     return candidate is not None and (not current or current['wallet'] not in priorities or candidate['wallet'] in priorities)
 
 
-def run(directory,cfg,priority_file=None,*,workers=2,max_transactions=None,max_run_seconds=None):
+def run(directory,cfg,priority_file=None,*,workers=2,max_transactions=None,max_run_seconds=None,
+        priority_only=False,paid_only=False):
+    if priority_only and not priority_file:raise ValueError('priority_only_requires_file')
     if type(workers) is not int or not 1<=workers<=4:raise ValueError('campaign_workers_must_be_1_to_4')
     if max_transactions is not None and (type(max_transactions) is not int or max_transactions<=0):
         raise ValueError('invalid_transaction_limit')
@@ -377,6 +390,7 @@ def run(directory,cfg,priority_file=None,*,workers=2,max_transactions=None,max_r
         if max_run_seconds is not None:budget.deadline=min(budget.deadline,time.monotonic()+max_run_seconds)
         initial_decoded=db.execute('SELECT COUNT(payload) FROM historical_transactions').fetchone()[0]
         initial_attempts=dict(budget.counts);started=time.monotonic()
+        initial_paid=db.execute('SELECT attempts,reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()
         cache=PilotCache(out/'rpc_cache.sqlite3',[cfg.rpc_cache_file,
             'outputs/holding_pilot_mainnet_20260922/rpc_cache.sqlite3','outputs/holding_pilot_live_20260922/rpc_cache.sqlite3'])
         clients=[]
@@ -410,22 +424,28 @@ def run(directory,cfg,priority_file=None,*,workers=2,max_transactions=None,max_r
                     remaining=max_transactions-(db.execute('SELECT COUNT(payload) FROM historical_transactions').fetchone()[0]-initial_decoded)
                     if remaining<=0:stop='TRANSACTION_LIMIT';break
                     batch=min(batch,remaining)
-                row=next_pending(db,time.time(),priorities)
+                row=next_pending(db,time.time(),priorities,priority_only)
                 if settings.get('nansen_seed_database') and steps%2==0:
                     from nansen_holding_campaign import ready_wallet
                     ready=ready_wallet(db,settings['nansen_seed_database'],settings['context'],time.time())
-                    if advisory_allowed(ready,row,priorities):row=ready
+                    if advisory_allowed(ready,row,priorities) and (not priority_only or ready['wallet'] in priorities):row=ready
                 hybrid_only=False
                 if hybrid and steps%3==1:
                     from hybrid_history import ready_wallet as hybrid_ready
                     ready=hybrid_ready(db,hybrid.path,time.time())
-                    if advisory_allowed(ready,row,priorities):row=ready;hybrid_only=True
+                    if advisory_allowed(ready,row,priorities) and (not priority_only or ready['wallet'] in priorities):row=ready;hybrid_only=True
                 if not row:
-                    if db.execute("SELECT 1 FROM campaign_queue WHERE state='PENDING'").fetchone():time.sleep(5);continue
+                    pending=(db.execute("SELECT 1 FROM campaign_queue WHERE state='PENDING' AND wallet IN ("+
+                        ','.join('?' for _ in priorities)+')',priorities).fetchone() if priority_only else
+                        db.execute("SELECT 1 FROM campaign_queue WHERE state='PENDING'").fetchone())
+                    if pending:time.sleep(5);continue
                     break
                 w=row['wallet'];budget.wallet=w
                 # Alternate public providers only after an actual failed attempt.
                 available=[r for r in clients if r is not paid_client or (not paid_disabled and budget.paid_available())]
+                if paid_only:
+                    available=[r for r in available if r is paid_client]
+                    if not available:stop='PAID_UNAVAILABLE';break
                 rpc=available[row['failures']%len(available)]
                 try:
                     result=advance(db,w,rpc,arc,batch=batch,seed_database=settings.get('nansen_seed_database'),context=settings['context'],hybrid=hybrid,hybrid_only=hybrid_only)
@@ -433,6 +453,7 @@ def run(directory,cfg,priority_file=None,*,workers=2,max_transactions=None,max_r
                 except PaidBudgetLimit:
                     paid_disabled=True
                     status(db,out)
+                    if paid_only:stop='PAID_LIMIT';break
                     continue  # Preserve partial progress; resume the same wallet on public RPC.
                 except PilotLimit:stop='BUDGET_OR_DEADLINE';break
                 except Exception as error:
@@ -465,7 +486,9 @@ def run(directory,cfg,priority_file=None,*,workers=2,max_transactions=None,max_r
                 workers=workers,elapsed_seconds=time.monotonic()-started,
                 decoded_this_run=s['decoded']-initial_decoded,
                 http_attempts_this_run={k:v-initial_attempts.get(k,0) for k,v in budget.counts.items()},
-                transaction_limit=max_transactions))
+                transaction_limit=max_transactions,priority_only=priority_only,paid_only=paid_only,
+                alchemy_attempts_this_run=s['alchemy_http_calls']-initial_paid[0],
+                alchemy_reserved_cu_this_run=s['alchemy_reserved_cu']-initial_paid[1]))
             print(json.dumps(dict(stop=stop,states=s['states'])),flush=True)
 
 
@@ -480,6 +503,8 @@ def main(argv=None):
     p.add_argument('--workers',type=int,default=2,help='1 to 4 independent read clients; persistence remains ordered')
     p.add_argument('--max-transactions',type=int,help='Optional bounded measurement; retain all progress')
     p.add_argument('--max-run-seconds',type=int,help='May shorten, never extend, the campaign deadline')
+    p.add_argument('--priority-only',action='store_true',help='Never schedule wallets outside the priority file')
+    p.add_argument('--paid-only',action='store_true',help='Bounded paid measurement; stop rather than fall back to public RPC')
     p.add_argument('--source',default='data/arc_bot.sqlite3')
     args=p.parse_args(argv)
     if args.action=='status':
@@ -502,9 +527,10 @@ def main(argv=None):
         enable_hybrid(args.directory,args.hybrid_directory)
     elif args.action=='enable-paid':
         if args.max_usd is None:p.error('--max-usd required')
-        enable_paid(args.directory,SETTINGS,args.max_usd)
+        enable_paid(args.directory,SETTINGS,args.max_usd,args.priority_file)
     else:run(args.directory,SETTINGS,args.priority_file,workers=args.workers,
-             max_transactions=args.max_transactions,max_run_seconds=args.max_run_seconds)
+             max_transactions=args.max_transactions,max_run_seconds=args.max_run_seconds,
+             priority_only=args.priority_only,paid_only=args.paid_only)
 
 
 if __name__=='__main__':main()

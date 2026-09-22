@@ -99,3 +99,42 @@ Validation: 1,336 deterministic tests passed across the tracked suite plus the
 new acceleration tests. Three Windows multiprocessing tests required an
 unsandboxed rerun to create named pipes. The stale-backup failure test now passes
 an explicit temporary root to preservation helpers, avoiding real user archives.
+
+## Scoped additional paid budget
+
+`enable-paid --max-usd` sets a **cumulative** conservative reservation cap; it
+does not reset prior usage. Supplying `--priority-file` binds paid attempts to
+those addresses in the persisted policy. Subsequent cap changes preserve this
+scope unless another explicit valid priority file is provided. Every paid
+reservation rejects an outside wallet before HTTP or budget consumption.
+
+`run --priority-only` restricts scheduling and cache/provider shortcuts to the
+priority list. Unlike ordinary priority mode, it never proceeds to the rest of
+the campaign when those wallets finish. `--paid-only` is for bounded measurement:
+it stops when paid access/budget is unavailable instead of contaminating that
+measurement with public fallback. Normal runs retain public fallback and the
+original public/deadline limits. Neither mode reopens blocked or review-required
+dossiers automatically.
+
+On 2026-09-22 the owner authorized $5 extra, including a pilot capped at $0.10,
+with continuation conditional on at least a threefold observed speedup. The
+pilot cumulative cap was $5.10, scoped to the 25 addresses. Exactly 100 new
+payloads were saved in 73.016 seconds using 451 Alchemy attempts, zero public
+RPC/Arcscan/Nansen calls, and $0.0451 of conservative reservation. Compared with
+the public lot this is 7.29x the transaction throughput and 6.23x after normalizing
+by request count. The lots differ, so this is not a controlled same-data test.
+All previously stored payloads were compared against the pre-run backup and
+were unchanged; new evidence and before/after backups were retained.
+
+After the gate passed, the cumulative cap was set to $10: the original $5 plus
+the authorized $5, not $10 additional. The pilot is included. Seven shortlisted
+wallets blocked on public `invalid_result` responses were explicitly requeued
+once for the new provider. Their old queue rows were archived; failure counts,
+backoff timestamps, historical payloads and cursors were retained. Existing
+review-required ambiguity dossiers were not requalified. This operational retry
+does not confer holding eligibility or trading authority.
+
+Validation for this change: 142 deterministic campaign, transport, budget,
+prefetch, holding-duration and hybrid-cache tests passed, including eight new
+scope/paid-only tests. Run evidence is retained in the campaign's
+`paid_comparison_gate_20260922.json` and authorization/retry archives.
