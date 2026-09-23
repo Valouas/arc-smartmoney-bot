@@ -11,6 +11,7 @@ from web3 import Web3
 
 from copy_exact_code_research import canonical_pool
 from copy_slipstream_research import reviewed_pool
+from copy_native_route_research import reviewed_native_payment
 from decoder import TRANSFER_TOPIC, SWAP_TOPICS, hex_value, topic_to_address, wallet_token_deltas
 from rpc import USDC_ERC20, NATIVE_MIRROR
 
@@ -58,8 +59,12 @@ def prove_route(tx,receipt,wallet,trade,rpc,pools):
 
 
 def _prove(tx,receipt,wallet,trade,rpc,pools):
-    if (tx.get('from','').lower()!=wallet or int(tx.get('value','0x0'),16)!=0 or
+    if (tx.get('from','').lower()!=wallet or
         receipt['status']!=1 or trade['side'] not in ('BUY','SELL')):return None
+    native_payment=None
+    if int(tx.get('value','0x0'),16)!=0:
+        native_payment=reviewed_native_payment(tx,receipt,wallet,trade)
+        if native_payment is None:return None
     logs=receipt['logs']
     swaps=[l for l in logs if l.get('topics') and hex_value(l['topics'][0]) in SWAP_TOPICS]
     kinds=[hex_value(l['topics'][0]) for l in swaps]
@@ -111,7 +116,9 @@ def _prove(tx,receipt,wallet,trade,rpc,pools):
             method='EXACT_RECONCILED_V3_V3_ROUTE' if kinds.count(V3)==2 else 'EXACT_RECONCILED_V3_V4_ROUTE'
             if any(p['kind']=='REVIEWED_SLIPSTREAM' for p in proofs):
                 method='EXACT_RECONCILED_SLIPSTREAM_ROUTE'
-            return dict(method=method,pools=proofs,engine_authority=False)
+            result=dict(method=method,pools=proofs,engine_authority=False)
+            if native_payment:result['native_payment']=native_payment
+            return result
         if node[0]==wallet and (node!=(wallet,first) or mask):continue
         for target,bit in graph[node]:
             state=(target,mask|bit)
