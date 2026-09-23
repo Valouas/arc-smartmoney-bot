@@ -1,4 +1,4 @@
-"""Offline proof for a narrow two-hop V3/V4 route; no engine authority.
+"""Offline proof for V3/V3 or V3/V4 two-hop routes; no engine authority.
 
 Actual pool Transfer deltas must exactly reconcile each Swap event. Hook fees,
 flash accounting or mixed routes that do not reconcile remain unresolved.
@@ -61,7 +61,9 @@ def _prove(tx,receipt,wallet,trade,rpc,pools):
         receipt['status']!=1 or trade['side'] not in ('BUY','SELL')):return None
     logs=receipt['logs']
     swaps=[l for l in logs if l.get('topics') and hex_value(l['topics'][0]) in SWAP_TOPICS]
-    if len(swaps)!=2 or {hex_value(l['topics'][0]) for l in swaps}!={V3,V4}:return None
+    kinds=[hex_value(l['topics'][0]) for l in swaps]
+    if (len(swaps)!=2 or kinds.count(V3) not in (1,2) or any(k not in (V3,V4) for k in kinds)
+        or len({l['address'].lower() for l in swaps})!=2):return None
     transfers=[l for l in logs if len(l.get('topics',[]))==3 and hex_value(l['topics'][0])==hex_value(TRANSFER_TOPIC)]
     tokens={l['address'].lower() for l in transfers}-{MIRROR}
     if not 2<=len(tokens)<=16:return None
@@ -103,7 +105,8 @@ def _prove(tx,receipt,wallet,trade,rpc,pools):
     while queue:
         node,mask=queue.popleft()
         if node==(wallet,last) and mask==3:
-            return dict(method='EXACT_RECONCILED_V3_V4_ROUTE',pools=proofs,engine_authority=False)
+            method='EXACT_RECONCILED_V3_V3_ROUTE' if kinds.count(V3)==2 else 'EXACT_RECONCILED_V3_V4_ROUTE'
+            return dict(method=method,pools=proofs,engine_authority=False)
         if node[0]==wallet and (node!=(wallet,first) or mask):continue
         for target,bit in graph[node]:
             state=(target,mask|bit)

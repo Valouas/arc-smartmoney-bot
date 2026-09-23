@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import json
 import hashlib
 import sqlite3
+from pathlib import Path
 import pytest
 from web3 import Web3
 
@@ -96,6 +97,33 @@ def test_reviewed_nonasset_requires_exact_code_at_exact_block(tmp_path,monkeypat
     result=replay_wallet(W,run,rows,raws,rpc,{(NONASSET,3):{code}})
     assert result['holding']['holding_duration_eligible']
     assert result['changes'][0]['reason']=='REVIEWED_NON_STATE_CHANGING_LOG_SOURCE'
+
+
+@pytest.mark.parametrize('case',['valid','zero_cash_log','other_address','different_code','wrong_block','conflicting_code','self_sender','cash_touch','swap'])
+def test_reviewed_readonly_balance_token_is_narrow(tmp_path,case):
+    rows,raws,rpc,run=setup(tmp_path)
+    fixture=json.loads((Path(__file__).parent/'fixtures/copy_readonly_transfer_log.json').read_text())
+    token=fixture['address'];code=bytes.fromhex(fixture['runtime'][2:])
+    t,receipt=raws[rows[2]['tx_hash']]
+    receipt['logs']=[transfer(token,W,POOL,5,True)]
+    codes={(token,3):{code}}
+    if case=='other_address':
+        receipt['logs']=[transfer(G,W,POOL,5,True)];codes={(G,3):{code}}
+    elif case=='different_code':codes={(token,3):{code+b'\x55'}}
+    elif case=='wrong_block':codes={(token,2):{code}}
+    elif case=='conflicting_code':codes[(token,3)].add(b'other')
+    elif case=='self_sender':t['from']=W
+    elif case=='cash_touch':receipt['logs'].append(transfer(USDC_ERC20,POOL,W,1,True))
+    elif case=='zero_cash_log':receipt['logs'].append(transfer(USDC_ERC20,W,POOL,0,True))
+    elif case=='swap':receipt['logs'].append(dict(address=POOL,topics=[SWAP],data='0x'))
+    before=deepcopy(rows)
+    result=replay_wallet(W,run,rows,raws,rpc,codes)
+    assert rows==before
+    assert result['holding']['holding_duration_eligible'] is (case in ('valid','zero_cash_log'))
+    if case in ('valid','zero_cash_log'):
+        assert result['changes'][0]['reason']=='REVIEWED_NON_STATE_CHANGING_LOG_SOURCE'
+        assert result['changes'][0]['before']['inventory_gap'] is True
+    else:assert result['holding']['median_first_sale_seconds'] is None
 
 
 def test_unreviewed_swap_stays_unconfirmed(tmp_path):

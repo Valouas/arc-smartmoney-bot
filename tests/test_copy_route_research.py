@@ -50,6 +50,30 @@ def test_exact_route_in_both_directions(tmp_path,sell):
     assert r==before
 
 
+@pytest.mark.parametrize('sell',[False,True])
+@pytest.mark.parametrize('invalid',[None,'factory','code','amount','same_pool'])
+def test_two_canonical_v3_hops_still_need_full_proof(tmp_path,sell,invalid):
+    tx,r,t,rpc,p=fixture(tmp_path,sell)
+    salt=Web3.keccak(encode(['address','address','uint24'],[I,T,3000]))
+    pool=Web3.to_hex(Web3.keccak(b'\xff'+bytes.fromhex(FACTORY[2:])+salt+INIT_HASH)[12:])
+    proof=dict(next(iter(p.values())),pool=pool,token0=I,token1=T)
+    p[pool]=proof;rpc.registry.entries[pool]=proof['runtime_code_hash']
+    rpc.codes[(pool,42)]=rpc.codes[(MANAGER,42)]
+    for log in r['logs']:
+        if log['address'].lower()==MANAGER:log['address']=pool
+        log['topics']=[v.replace(MANAGER[2:],pool[2:]) for v in log['topics']]
+    sign=-1 if sell else 1
+    r['logs'][-1].update(topics=['0x'+V3,'0x'+W[2:].zfill(64),'0x'+W[2:].zfill(64)],
+        data='0x'+encode(['int256','int256','uint160','uint128','int24'],[10*sign,-100*sign,1,1,0]).hex())
+    if invalid=='factory':p[pool]['factory']=OTHER
+    elif invalid=='code':rpc.codes[(pool,42)]={b'changed'}
+    elif invalid=='amount':r['logs'][1]['data']='0x'+f'{9:064x}'
+    elif invalid=='same_pool':r['logs'][-1]['address']=r['logs'][-2]['address']
+    result=prove_route(tx,r,W,t,rpc,p)
+    if invalid is None:assert result and result['method']=='EXACT_RECONCILED_V3_V3_ROUTE'
+    else:assert result is None
+
+
 @pytest.mark.parametrize('case',['missing_code','wrong_code','wrong_block','unknown_factory','wrong_pool_id',
     'wrong_calldata_key','wrong_sign','disconnected','partial_amount','extra_swap','native_value',
     'wrong_sender','failed_receipt','malformed_swap','malformed_integer','conflicting_cash','extra_pool_currency'])

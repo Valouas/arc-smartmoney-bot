@@ -23,6 +23,8 @@ from copy_route_research import prove_route
 
 NONASSET='0xc6203d86f5efbed7f9512755f3e6132ee50d03d1'
 NONASSET_HASH='0x2825969fa042ed3875c136534af0516ab3226cbe2e1809629dae4642d5070f42'
+READONLY_LOG_TOKEN='0xba4985efa2e16bd897da4b46a8f37dd80de4be8e'
+READONLY_LOG_HASH='0xc562f804e4e9a90fc0e8f2720071e5bc7f768b79bb2fcbd9e0af70623018a93e'
 
 
 class RawUnitsRPC(OfflineRPC):
@@ -50,7 +52,9 @@ def receipt_info(wallet,payload,tx,receipt):
             not HASH.fullmatch(log['data']) or log.get('removed')):
             raise ValueError('MALFORMED_TRANSFER_EVIDENCE')
         ends={topic_to_address(t).lower() for t in topics[1:]}
-        cash_touch |= wallet in ends and log['address'].lower() in CASH
+        # A zero-value USDC Transfer is not a movement of wallet capital. Any
+        # positive cash leg still blocks the nontrading-credit explanations.
+        cash_touch |= wallet in ends and log['address'].lower() in CASH and int(log['data'],16)>0
     return dict(deltas={t.lower():v for t,v in wallet_token_deltas(receipt,wallet).items() if v},
                 cash_touch=cash_touch,swap=swap,success=int(receipt['status'],16)==1)
 
@@ -63,14 +67,23 @@ def isolated_credit(wallet,tx,info,disposed,traded):
 
 
 def nonasset_only(wallet,tx,payload,info,codes):
-    if (set(info['deltas'])!={NONASSET} or info['cash_touch'] or info['swap'] or
+    if (len(info['deltas'])!=1 or info['cash_touch'] or info['swap'] or
         not info['success'] or tx.get('from','').lower()==wallet or int(tx.get('value','0x0'),16)):
         return False
-    values=codes.get((NONASSET,payload['block']),set())
+    token=next(iter(info['deltas']))
+    expected={NONASSET:NONASSET_HASH,READONLY_LOG_TOKEN:READONLY_LOG_HASH}.get(token)
+    if expected is None:return False
+    values=codes.get((token,payload['block']),set())
     if len(values)!=1:return False
     code=next(iter(values))
-    return (Web3.to_hex(Web3.keccak(code))==NONASSET_HASH and
-            code_diagnostic('0x'+code.hex())['status']=='NO_STORAGE_OR_CALL_OPCODES')
+    if Web3.to_hex(Web3.keccak(code))!=expected:return False
+    diagnostic=code_diagnostic('0x'+code.hex())
+    if token==NONASSET:return diagnostic['status']=='NO_STORAGE_OR_CALL_OPCODES'
+    # Specifically reviewed runtime: balanceOf reads mapping slot 4; transfer
+    # and transferFrom emit logs and return true, without any ledger mutation.
+    # SLOAD is allowed ONLY for this exact address/hash, never arbitrary tokens.
+    return (diagnostic['status']=='REQUIRES_SEMANTIC_REVIEW' and
+            diagnostic['opcode_inventory']==['0x54'])
 
 
 def replay_wallet(wallet,run,records,raw,rpc,codes):
@@ -109,7 +122,7 @@ def replay_wallet(wallet,run,records,raw,rpc,codes):
                 trade['token_amount']=str(abs(delta));trade['quantity_unit']='RAW_TOKEN_UNITS'
                 traded.add(t)
             if original.get('error') and not p.get('error'):
-                reason='RECONCILED_V3_V4_ROUTE' if p.get('research_route_evidence') else 'DIRECT_SWAP_WITH_REVIEWED_EXACT_CODE'
+                reason=p['research_route_evidence']['method'].removeprefix('EXACT_') if p.get('research_route_evidence') else 'DIRECT_SWAP_WITH_REVIEWED_EXACT_CODE'
                 changes.append(dict(tx_hash=p['tx_hash'],reason=reason,before=original,after=deepcopy(p)))
         # Isolation uses the entire complete receipt set and both retained/new trades.
         for p in output:

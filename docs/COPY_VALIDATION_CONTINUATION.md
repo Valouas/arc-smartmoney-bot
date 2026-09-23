@@ -246,3 +246,53 @@ minimum duration for every trade or proof that webhook processing and execution
 will take less than a minute. 180 relevant deterministic tests pass, including
 the inclusive 60-second boundary, explicit legacy 120-second boundary, unchanged
 scores/shortlist and unresolved-history rejection. No API credits consumed.
+
+## Fourth continuation: token semantics and V3/V3 routes
+
+The same exact reconciliation now supports two distinct canonical V3 pools as
+well as a V3/V4 pair. Each hop still needs canonical membership, exact-block code,
+event/Transfer quantity agreement and a directed path through both conversions.
+Repeated events from one pool, unknown factories and amount mismatches fail closed.
+
+A second specific non-mutating log source was reviewed:
+`0xba4985efa2e16bd897da4b46a8f37dd80de4be8e`, runtime hash
+`0xc562f804e4e9a90fc0e8f2720071e5bc7f768b79bb2fcbd9e0af70623018a93e`.
+Nine stored exact-block observations have this 2,491-byte runtime. `balanceOf`
+at offset `0x381` reads mapping slot 4. The `transferFrom` section at `0x21f` and
+`transfer` section at `0x457` check nonzero addresses, emit Transfer and return
+true without updating that mapping. The entire PUSH-aware opcode inventory has
+storage reads, but no storage/transient writes, external calls, creation or
+self-destruct. Storage reads are allowed only for this explicitly reviewed
+address/hash; this is not a generic token or contract-wallet exclusion.
+
+The research explanation additionally requires the exact block code, an external
+transaction sender, zero native transaction value, no Swap and no positive
+wallet cash leg. A zero-amount USDC Transfer moves no capital and does not count
+as a cash leg; a positive leg still prevents the explanation. Original logs and
+decoded records remain retained with before/after annotations. No automatic
+engine trust, score, paper or live authority is granted.
+
+`tests/fixtures/copy_readonly_transfer_log.json` freezes the reviewed runtime.
+The regressions cover another address with identical code, altered code, wrong
+block, conflicting code observations, self-sender, zero/positive cash transfers,
+Swap presence and two-V3 failures. 231 relevant deterministic tests pass. All
+work in this continuation is offline; the cumulative paid reservation remains
+$6.7401 of the existing $10 cap, with no Nansen requests or credit consumption.
+
+Latest evidence: `outputs/research_replay_semantics_final_20260923/`, with joined
+dated performance/funds in `outputs/copy_validation_semantics_20260923/`.
+The Top25 now has **6 dossiers satisfying the dated research criteria, 3 too
+short and 16 still ambiguous**. The two newly resolved dossiers are:
+
+| Wallet | Median / samples | Stored ROI | Dated observed funds |
+|---|---:|---:|---:|
+| `0x92a2297d3ab8c733146dd2ed858117c85d0caa5a` | 495.5 s / 44 | 156.11% | $1,001.24 |
+| `0xe65446f10e240e746affa3e7e313dfab1798a92a` | 1,731 s / 43 | 62.16% | $4,197.09 |
+
+Exact funds timestamps and holding cutoffs are in the joined report; these are
+not newly polled balances. The replay explains 27 V3/V3 swaps in addition to the
+previous 55 V3/V4 swaps. 1,124 observations now carry explicit research
+explanations. All 5,342 source transaction payloads compare unchanged. The nine
+local replacements replayed before the zero-cash correction remain pending in
+`outputs/research_replacements_v3_readonly_20260923/`; do not infer paid scope or
+eligibility for them. All earlier reports and verified archives are retained.
