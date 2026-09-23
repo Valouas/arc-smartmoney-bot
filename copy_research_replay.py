@@ -22,6 +22,7 @@ from dex_registry import TrustedDexRegistry
 from copy_route_research import prove_route
 from copy_slipstream_research import reviewed_pool
 from copy_distribution_research import reviewed_distribution
+from copy_synthra_research import reviewed_pool as reviewed_synthra_pool
 
 NONASSET='0xc6203d86f5efbed7f9512755f3e6132ee50d03d1'
 NONASSET_HASH='0x2825969fa042ed3875c136534af0516ab3226cbe2e1809629dae4642d5070f42'
@@ -31,6 +32,10 @@ READONLY_LOG_HASH='0xc562f804e4e9a90fc0e8f2720071e5bc7f768b79bb2fcbd9e0af7062301
 
 class RawUnitsRPC(OfflineRPC):
     def swap_emitter_trusted(self,address,block):
+        synthra=getattr(self,'synthra_proofs',{})
+        if any(a==address.lower() for a,b in synthra):
+            if not reviewed_synthra_pool(synthra.get((address.lower(),block),{}),block):
+                return False
         proof=getattr(self,'pool_proofs',{}).get(address.lower(),{})
         if proof.get('status')=='MEMBERSHIP_OBSERVED_REVIEW_PENDING' and not reviewed_pool(proof,block):
             return False
@@ -158,7 +163,7 @@ def replay_wallet(wallet,run,records,raw,rpc,codes):
     return dict(holding=holding,changes=changes,records=output)
 
 
-def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path,slipstream_proofs=()):
+def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path,slipstream_proofs=(),synthra_proofs=()):
     campaign,pool_dir,exact_dir,out=map(Path,(campaign,pool_dir,exact_dir,out))
     wallets=json.loads(Path(scope).read_text())['wallets']
     if (not isinstance(wallets,list) or not 1<=len(wallets)<=25 or len(set(wallets))!=len(wallets) or
@@ -189,7 +194,19 @@ def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path,slips
         address,block=proof['pool'],proof['block']
         registry.entries[address]=proof['pool_code_hash'];pool_proofs[address]=proof
         codes.setdefault((address,block),set()).add(bytes.fromhex(proof['pool_code'][2:]))
+    synthra={}
+    for path in map(Path,synthra_proofs):
+        digest=json.loads((path.parent/'manifest.json').read_text(encoding='utf-8')).get(path.name)
+        if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:raise ValueError('synthra_digest_mismatch')
+        for proof in json.loads(path.read_text(encoding='utf-8'))['rows']:
+            address,block=proof['pool'],proof['block']
+            if not reviewed_synthra_pool(proof,block):raise ValueError('synthra_provenance_incomplete')
+            key=(address,block)
+            if key in synthra and synthra[key]!=proof:raise ValueError('conflicting_synthra_proof')
+            synthra[key]=proof;registry.entries[address]=proof['pool_code_hash']
+            codes.setdefault(key,set()).add(bytes.fromhex(proof['pool_code'][2:]))
     rpc=RawUnitsRPC(registry,{},codes)
+    rpc.synthra_proofs=synthra
     rpc.pool_proofs=pool_proofs
     out.mkdir(parents=True,exist_ok=False);rows=[]
     with ExitStack() as stack:
@@ -219,9 +236,10 @@ def main():
     for arg in ('campaign','scope','pools','exact','output'):p.add_argument('--'+arg,required=True)
     p.add_argument('--cache',action='append',default=[]);p.add_argument('--ledger',action='append',default=[])
     p.add_argument('--slipstream-proof',action='append',default=[])
+    p.add_argument('--synthra-proof',action='append',default=[])
     p.add_argument('--registry',default='trusted_dex.json');a=p.parse_args()
     run(a.campaign,a.scope,a.pools,a.exact,a.output,[Path(a.campaign)/'rpc_cache.sqlite3',*a.cache],
-        [Path(a.campaign)/'requests.jsonl',*a.ledger],a.registry,a.slipstream_proof)
+        [Path(a.campaign)/'requests.jsonl',*a.ledger],a.registry,a.slipstream_proof,a.synthra_proof)
 
 
 if __name__=='__main__':main()
