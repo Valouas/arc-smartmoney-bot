@@ -8,7 +8,7 @@ from statistics import median
 
 ADDRESS = re.compile(r'0x[0-9a-fA-F]{40}\Z')
 HASH = re.compile(r'0x[0-9a-fA-F]{64}\Z')
-DEFAULT_MIN_HOLDING_SECONDS = 60  # Owner-approved research gate, 2026-09-23.
+DEFAULT_MIN_HOLDING_SECONDS = 40  # Owner-approved research gate, 2026-09-23.
 
 
 def unknown(reason, minimum=DEFAULT_MIN_HOLDING_SECONDS):

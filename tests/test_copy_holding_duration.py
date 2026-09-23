@@ -32,12 +32,24 @@ def test_inclusive_two_minute_boundary(duration, expected):
 
 
 @pytest.mark.parametrize('duration,expected', [(0,False),(59,False),(60,True),(61,True),(108,True),(111,True)])
-def test_owner_requested_one_minute_default(duration,expected):
+def test_explicit_one_minute_threshold_remains_available(duration,expected):
     rows=[tx(1,100),tx(2,100+duration,'SELL')]
-    r=measure(rows,1000)
+    r=measure(rows,1000,minimum=60)
     assert r['min_holding_seconds']==60
     assert r['holding_duration_eligible'] is expected
     assert r['holding_fast_exit_count']==int(duration<60)
+
+
+@pytest.mark.parametrize('duration,expected', [(0,False),(39,False),(40,True),(44,True),(60,True)])
+def test_owner_requested_forty_second_default(duration,expected):
+    rows=[tx(1,100),tx(2,100+duration,'SELL')]
+    r=measure(rows,1000)
+    assert r['min_holding_seconds']==40
+    assert r['holding_duration_eligible'] is expected
+    assert r['holding_fast_exit_count']==int(duration<40)
+    with sqlite3.connect(':memory:') as db:
+        save_history(db,duration=duration)
+        assert stored_holding(db,W)['holding_duration_eligible'] is expected
 
 
 def test_partial_sale_is_first_exit_not_last_dust_exit():
