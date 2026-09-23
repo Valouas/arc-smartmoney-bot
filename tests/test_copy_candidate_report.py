@@ -297,7 +297,7 @@ def test_unknown_roi_never_passes_minimum(stored):
     assert r['roi_status']=='UNKNOWN_ROI' and not r['copy_research_eligible']
 
 
-@pytest.mark.parametrize('duration,eligible', [(119,False),(120,True)])
+@pytest.mark.parametrize('duration,eligible', [(59,False),(60,True),(119,True),(120,True)])
 def test_holding_gate_preserves_scores_and_shortlist(stored,duration,eligible):
     from test_copy_holding_duration import tx
     db,path=stored

@@ -12,6 +12,7 @@ import sqlite3
 import statistics
 
 from copy_candidate_report import ADDRESS, number, report, wilson
+from copy_holding_duration import DEFAULT_MIN_HOLDING_SECONDS
 
 
 def zero_value_position(realized, opened):
@@ -147,7 +148,7 @@ def analyze(payload, strict):
                 live_signal_authority=False,paper_selected=False)
 
 
-def recovery_report(db_path, shortlist_path, excluded=(), maximum=50, minimum_roi=20, minimum_holding=120):
+def recovery_report(db_path, shortlist_path, excluded=(), maximum=50, minimum_roi=20, minimum_holding=DEFAULT_MIN_HOLDING_SECONDS):
     strict=report(db_path,shortlist_path,excluded,maximum,minimum_roi,minimum_holding)
     rows=[]
     with closing(sqlite3.connect(Path(db_path).resolve().as_uri()+'?mode=ro',uri=True)) as db:
@@ -240,7 +241,7 @@ def main(argv=None):
     p.add_argument('--registry',default='trusted_dex.json')
     p.add_argument('--max-operations-per-day',type=float,default=50)
     p.add_argument('--min-roi-pct',type=float,default=20)
-    p.add_argument('--min-holding-seconds',type=float,default=120)
+    p.add_argument('--min-holding-seconds',type=float,default=DEFAULT_MIN_HOLDING_SECONDS)
     p.add_argument('--output-dir',required=True,help='New directory, never overwrite existing evidence')
     args=p.parse_args(argv)
     registry=json.loads(Path(args.registry).read_text(encoding='utf-8-sig'))

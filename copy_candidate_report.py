@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from copy_holding_duration import stored_holding, valid_minimum
+from copy_holding_duration import stored_holding, valid_minimum, DEFAULT_MIN_HOLDING_SECONDS
 
 ADDRESS = re.compile(r'0x[0-9a-fA-F]{40}\Z')
 
@@ -140,7 +140,7 @@ def score(payload, wallet):
                 source_flags=payload.get('flags', []))
 
 
-def report(db_path, shortlist_path, excluded=(), max_operations_per_day=50, min_roi_pct=20, min_holding_seconds=120):
+def report(db_path, shortlist_path, excluded=(), max_operations_per_day=50, min_roi_pct=20, min_holding_seconds=DEFAULT_MIN_HOLDING_SECONDS):
     valid_minimum(min_holding_seconds)
     if not number(max_operations_per_day) or max_operations_per_day <= 0:
         raise ValueError('invalid_max_operations_per_day')
@@ -228,7 +228,7 @@ def main(argv=None):
     except ValueError:
         parser.error('COPY_MIN_ROI_PCT must be finite')
     try:
-        minimum_holding = float(os.getenv('COPY_MIN_HOLDING_SECONDS', '120'))
+        minimum_holding = float(os.getenv('COPY_MIN_HOLDING_SECONDS', str(DEFAULT_MIN_HOLDING_SECONDS)))
         valid_minimum(minimum_holding)
     except ValueError:
         parser.error('COPY_MIN_HOLDING_SECONDS must be finite and nonnegative')

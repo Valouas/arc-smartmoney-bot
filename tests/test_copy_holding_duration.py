@@ -26,9 +26,18 @@ def save_history(db, duration=120, wallet=W):
 
 @pytest.mark.parametrize('duration,expected', [(0,False),(119,False),(120,True),(121,True)])
 def test_inclusive_two_minute_boundary(duration, expected):
-    r = measure([tx(1,100), tx(2,100+duration,'SELL')], 1000)
+    r = measure([tx(1,100), tx(2,100+duration,'SELL')], 1000, minimum=120)
     assert r['holding_duration_eligible'] is expected
     assert r['median_first_sale_seconds'] == duration
+
+
+@pytest.mark.parametrize('duration,expected', [(0,False),(59,False),(60,True),(61,True),(108,True),(111,True)])
+def test_owner_requested_one_minute_default(duration,expected):
+    rows=[tx(1,100),tx(2,100+duration,'SELL')]
+    r=measure(rows,1000)
+    assert r['min_holding_seconds']==60
+    assert r['holding_duration_eligible'] is expected
+    assert r['holding_fast_exit_count']==int(duration<60)
 
 
 def test_partial_sale_is_first_exit_not_last_dust_exit():

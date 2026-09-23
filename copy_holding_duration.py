@@ -8,9 +8,10 @@ from statistics import median
 
 ADDRESS = re.compile(r'0x[0-9a-fA-F]{40}\Z')
 HASH = re.compile(r'0x[0-9a-fA-F]{64}\Z')
+DEFAULT_MIN_HOLDING_SECONDS = 60  # Owner-approved research gate, 2026-09-23.
 
 
-def unknown(reason, minimum=120):
+def unknown(reason, minimum=DEFAULT_MIN_HOLDING_SECONDS):
     return dict(holding_duration_status='UNKNOWN_HOLDING_DURATION',
                 holding_duration_reason=reason, median_first_sale_seconds=None,
                 min_holding_seconds=minimum, holding_sample_size=0,
@@ -26,7 +27,7 @@ def valid_minimum(value):
         raise ValueError('invalid_min_holding_seconds')
 
 
-def measure(transactions, cutoff_at, minimum=120):
+def measure(transactions, cutoff_at, minimum=DEFAULT_MIN_HOLDING_SECONDS):
     """One unweighted observation per acquisition lot, at its first partial exit.
 
     FIFO is an attribution convention, not identification of fungible units.
@@ -130,7 +131,7 @@ def measure(transactions, cutoff_at, minimum=120):
     return out
 
 
-def stored_holding(db, wallet, minimum=120, tables=None):
+def stored_holding(db, wallet, minimum=DEFAULT_MIN_HOLDING_SECONDS, tables=None):
     """Use the current complete generation, else last non-invalidated completion.
 
     No migrations, HTTP, RPC, writes, or mixing transactions across generations.

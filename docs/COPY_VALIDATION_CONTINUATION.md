@@ -223,3 +223,26 @@ This replacement inspection is offline only and grants no paid-wallet scope.
 calls and consumed zero new provider credits. Original histories and earlier
 reports are retained. Continue semantic inventory review, other route cases and
 local replacements; never weaken the two-minute threshold merely to reach 25.
+
+## Owner-approved threshold change (2026-09-23)
+
+The owner subsequently explicitly requested **60 seconds instead of 120** for
+the median BUY-to-first partial-sale gate. This supersedes the two-minute policy
+above for future research and the hourly follow-up. ROI, operation frequency,
+dated funds, infrastructure exclusions and fail-closed evidence requirements
+remain unchanged. No paper/live activation is authorized by this change.
+
+Shared research defaults, candidate reporting, recovery reporting and the example
+environment now use 60 seconds. The hourly automation was updated to the same
+policy. Historic reports retain their original criterion. The updated report in
+`outputs/copy_validation_60s_20260923/` recomputes medians and fast-exit statistics
+from preserved, digest-verified reconstructed records without any network call.
+The previous 120-second outcomes were reproduced first as a consistency check.
+
+Of the current 25, **4 satisfy the dated research criteria, 3 are too short and
+18 remain ambiguous**. The newly passing medians are 108 and 111 seconds. These
+are research results, not engine promotions. A median above 60 seconds is not a
+minimum duration for every trade or proof that webhook processing and execution
+will take less than a minute. 180 relevant deterministic tests pass, including
+the inclusive 60-second boundary, explicit legacy 120-second boundary, unchanged
+scores/shortlist and unresolved-history rejection. No API credits consumed.

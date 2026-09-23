@@ -233,8 +233,8 @@ not a fresh balance guarantee. No funded-review file is consumed by the engine.
 
 ## Minimum holding duration (owner-approved, 22 September 2026)
 
-`COPY_MIN_HOLDING_SECONDS=120` adds a research selection gate. Below 120 seconds
-is `EXCLUDED_SHORT_HOLDING`; exactly 120 passes. The owner chose the median time
+`COPY_MIN_HOLDING_SECONDS=60` adds a research selection gate. Below 60 seconds
+is `EXCLUDED_SHORT_HOLDING`; exactly 60 passes. The owner chose the median time
 from each acquisition to its **first partial sale**, not the final dust exit.
 `copy_holding_duration.py` matches confirmed swaps FIFO per token. There is one
 unweighted sample per buy lot with an observed first sale, regardless of later
@@ -267,7 +267,7 @@ remain archived, but predate this additional filter.
 
 Omit `--eligible-only` to see pending/excluded rows and their timing status; `--json`
 always includes the full scope and diagnostics. Recovery exports use the same
-default 120-second gate, configurable explicitly with `--min-holding-seconds`.
+default 60-second gate, configurable explicitly with `--min-holding-seconds`.
 Both commands remain offline: zero Nansen calls/credits and read-only SQLite.
 
 ## Explicit public-RPC timing pilot
@@ -297,3 +297,11 @@ and subtract all previous attempts from the original authorized budget. Limits
 are per invocation; the script does not create a new budget authorization.
 Missing/pruned receipts on one public provider must not be interpreted as no
 trade; any alternate provider is explicitly selected and chain-checked at 5042.
+
+
+On 2026-09-23 the owner explicitly lowered this research minimum from 120 to 60
+seconds. The definition remains the median BUY-to-first FIFO partial sale.
+Older evidence reports retain their original 120-second criterion. Recompute
+from stored transactions to also update fast-exit counts; do not relabel unknown
+histories as eligible. This reporting change adds no paper/live authority and
+does not guarantee copy latency or a one-minute holding time for every trade.
