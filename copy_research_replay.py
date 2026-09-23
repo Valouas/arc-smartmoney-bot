@@ -23,6 +23,7 @@ from copy_route_research import prove_route
 from copy_slipstream_research import reviewed_pool
 from copy_distribution_research import reviewed_distribution
 from copy_synthra_research import reviewed_pool as reviewed_synthra_pool
+from copy_launchpad_research import prove_buy as prove_launchpad_buy, reviewed_code as reviewed_launchpad_code
 
 NONASSET='0xc6203d86f5efbed7f9512755f3e6132ee50d03d1'
 NONASSET_HASH='0x2825969fa042ed3875c136534af0516ab3226cbe2e1809629dae4642d5070f42'
@@ -116,8 +117,15 @@ def replay_wallet(wallet,run,records,raw,rpc,codes):
             if p.get('error'):
                 try:
                     r=dict(receipt,status=int(receipt['status'],16),blockNumber=p['block'])
-                    new=classify_trade(rpc,r,wallet,1e-18,
-                        native_value_wei=int(tx.get('value','0x0'),16) if tx.get('from','').lower()==wallet else 0,strict=True)
+                    launch=prove_launchpad_buy(wallet,p,tx,receipt,info,codes)
+                    if launch:
+                        p['research_launchpad_evidence']=launch
+                        new=[dict(side='BUY',token=launch['token'],symbol='RAW_UNITS',
+                            token_amount=launch['raw_token_amount'],usdc_amount=int(launch['raw_usdc_amount'])/10**6,
+                            confirmation_eligible=True)]
+                    else:
+                        new=classify_trade(rpc,r,wallet,1e-18,
+                            native_value_wei=int(tx.get('value','0x0'),16) if tx.get('from','').lower()==wallet else 0,strict=True)
                     if len(new)==1 and not new[0].get('confirmation_eligible'):
                         route=prove_route(tx,r,wallet,new[0],rpc,getattr(rpc,'pool_proofs',{}))
                         if route:
@@ -136,6 +144,7 @@ def replay_wallet(wallet,run,records,raw,rpc,codes):
                 traded.add(t)
             if original.get('error') and not p.get('error'):
                 reason=p['research_route_evidence']['method'].removeprefix('EXACT_') if p.get('research_route_evidence') else 'DIRECT_SWAP_WITH_REVIEWED_EXACT_CODE'
+                if p.get('research_launchpad_evidence'):reason=p['research_launchpad_evidence']['method']
                 changes.append(dict(tx_hash=p['tx_hash'],reason=reason,before=original,after=deepcopy(p)))
         # Isolation uses the entire complete receipt set and both retained/new trades.
         for p in output:
@@ -163,7 +172,7 @@ def replay_wallet(wallet,run,records,raw,rpc,codes):
     return dict(holding=holding,changes=changes,records=output)
 
 
-def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path,slipstream_proofs=(),synthra_proofs=()):
+def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path,slipstream_proofs=(),synthra_proofs=(),launchpad_proofs=()):
     campaign,pool_dir,exact_dir,out=map(Path,(campaign,pool_dir,exact_dir,out))
     wallets=json.loads(Path(scope).read_text())['wallets']
     if (not isinstance(wallets,list) or not 1<=len(wallets)<=25 or len(set(wallets))!=len(wallets) or
@@ -205,6 +214,12 @@ def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path,slips
             if key in synthra and synthra[key]!=proof:raise ValueError('conflicting_synthra_proof')
             synthra[key]=proof;registry.entries[address]=proof['pool_code_hash']
             codes.setdefault(key,set()).add(bytes.fromhex(proof['pool_code'][2:]))
+    for path in map(Path,launchpad_proofs):
+        digest=json.loads((path.parent/'manifest.json').read_text(encoding='utf-8')).get(path.name)
+        if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:raise ValueError('launchpad_digest_mismatch')
+        proof=json.loads(path.read_text(encoding='utf-8'))
+        if not reviewed_launchpad_code(proof):raise ValueError('launchpad_provenance_incomplete')
+        codes.setdefault((proof['address'],proof['block']),set()).add(bytes.fromhex(proof['code'][2:]))
     rpc=RawUnitsRPC(registry,{},codes)
     rpc.synthra_proofs=synthra
     rpc.pool_proofs=pool_proofs
@@ -237,9 +252,10 @@ def main():
     p.add_argument('--cache',action='append',default=[]);p.add_argument('--ledger',action='append',default=[])
     p.add_argument('--slipstream-proof',action='append',default=[])
     p.add_argument('--synthra-proof',action='append',default=[])
+    p.add_argument('--launchpad-proof',action='append',default=[])
     p.add_argument('--registry',default='trusted_dex.json');a=p.parse_args()
     run(a.campaign,a.scope,a.pools,a.exact,a.output,[Path(a.campaign)/'rpc_cache.sqlite3',*a.cache],
-        [Path(a.campaign)/'requests.jsonl',*a.ledger],a.registry,a.slipstream_proof,a.synthra_proof)
+        [Path(a.campaign)/'requests.jsonl',*a.ledger],a.registry,a.slipstream_proof,a.synthra_proof,a.launchpad_proof)
 
 
 if __name__=='__main__':main()
