@@ -20,6 +20,7 @@ from copy_holding_pilot import save_new
 from decoder import wallet_token_deltas,classify_trade,hex_value,SWAP_TOPICS,TRANSFER_TOPIC,topic_to_address
 from dex_registry import TrustedDexRegistry
 from copy_route_research import prove_route
+from copy_slipstream_research import reviewed_pool
 
 NONASSET='0xc6203d86f5efbed7f9512755f3e6132ee50d03d1'
 NONASSET_HASH='0x2825969fa042ed3875c136534af0516ab3226cbe2e1809629dae4642d5070f42'
@@ -28,6 +29,12 @@ READONLY_LOG_HASH='0xc562f804e4e9a90fc0e8f2720071e5bc7f768b79bb2fcbd9e0af7062301
 
 
 class RawUnitsRPC(OfflineRPC):
+    def swap_emitter_trusted(self,address,block):
+        proof=getattr(self,'pool_proofs',{}).get(address.lower(),{})
+        if proof.get('status')=='MEMBERSHIP_OBSERVED_REVIEW_PENDING' and not reviewed_pool(proof,block):
+            return False
+        return super().swap_emitter_trusted(address,block)
+
     def token_meta(self,address):
         # Only side/cash-flow/confirmation from classify_trade are consumed.
         # Its float token_amount is replaced with an exact raw integer below.
@@ -143,7 +150,7 @@ def replay_wallet(wallet,run,records,raw,rpc,codes):
     return dict(holding=holding,changes=changes,records=output)
 
 
-def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path):
+def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path,slipstream_proofs=()):
     campaign,pool_dir,exact_dir,out=map(Path,(campaign,pool_dir,exact_dir,out))
     wallets=json.loads(Path(scope).read_text())['wallets']
     if (not isinstance(wallets,list) or not 1<=len(wallets)<=25 or len(set(wallets))!=len(wallets) or
@@ -166,6 +173,14 @@ def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path):
             e=proof['entry'];exact_codes.setdefault((e['address'],e['block']),set()).add(bytes.fromhex(proof['code'][2:]))
     _,codes,provenance=load_ledger(ledgers,set(registry.entries))
     for k,v in exact_codes.items():codes.setdefault(k,set()).update(v)
+    for path in map(Path,slipstream_proofs):
+        digest=json.loads((path.parent/'manifest.json').read_text(encoding='utf-8')).get(path.name)
+        if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:raise ValueError('slipstream_digest_mismatch')
+        proof=json.loads(path.read_text(encoding='utf-8'))
+        if not reviewed_pool(proof):raise ValueError('slipstream_provenance_incomplete')
+        address,block=proof['pool'],proof['block']
+        registry.entries[address]=proof['pool_code_hash'];pool_proofs[address]=proof
+        codes.setdefault((address,block),set()).add(bytes.fromhex(proof['pool_code'][2:]))
     rpc=RawUnitsRPC(registry,{},codes)
     rpc.pool_proofs=pool_proofs
     out.mkdir(parents=True,exist_ok=False);rows=[]
@@ -195,9 +210,10 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for arg in ('campaign','scope','pools','exact','output'):p.add_argument('--'+arg,required=True)
     p.add_argument('--cache',action='append',default=[]);p.add_argument('--ledger',action='append',default=[])
+    p.add_argument('--slipstream-proof',action='append',default=[])
     p.add_argument('--registry',default='trusted_dex.json');a=p.parse_args()
     run(a.campaign,a.scope,a.pools,a.exact,a.output,[Path(a.campaign)/'rpc_cache.sqlite3',*a.cache],
-        [Path(a.campaign)/'requests.jsonl',*a.ledger],a.registry)
+        [Path(a.campaign)/'requests.jsonl',*a.ledger],a.registry,a.slipstream_proof)
 
 
 if __name__=='__main__':main()

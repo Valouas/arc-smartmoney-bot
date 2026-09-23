@@ -10,6 +10,7 @@ from eth_abi.exceptions import DecodingError, EncodingError
 from web3 import Web3
 
 from copy_exact_code_research import canonical_pool
+from copy_slipstream_research import reviewed_pool
 from decoder import TRANSFER_TOPIC, SWAP_TOPICS, hex_value, topic_to_address, wallet_token_deltas
 from rpc import USDC_ERC20, NATIVE_MIRROR
 
@@ -81,11 +82,13 @@ def _prove(tx,receipt,wallet,trade,rpc,pools):
         data=bytes.fromhex(l['data'].removeprefix('0x'))
         if kind==V3:
             p=pools.get(address)
-            if not p or not canonical_pool(p) or p['pool']!=address or len(data)!=160:return None
-            if rpc.registry.entries.get(address)!=p['runtime_code_hash']:return None
+            slipstream=bool(p and reviewed_pool(p,receipt['blockNumber']))
+            if not p or not (canonical_pool(p) or slipstream) or p['pool']!=address or len(data)!=160:return None
+            expected_hash=p['pool_code_hash'] if slipstream else p['runtime_code_hash']
+            if rpc.registry.entries.get(address)!=expected_hash:return None
             a0,a1,*_=decode(['int256','int256','uint160','uint128','int24'],data)
             pair=(p['token0'],p['token1']);expected=dict(zip(pair,(a0,a1)))
-            detail=dict(kind='CANONICAL_V3',emitter=address,currencies=pair)
+            detail=dict(kind='REVIEWED_SLIPSTREAM' if slipstream else 'CANONICAL_V3',emitter=address,currencies=pair)
         else:
             if address!=MANAGER or len(data)!=192:return None
             key=recover_key(tx.get('input',''),tokens,l['topics'][1])
@@ -106,6 +109,8 @@ def _prove(tx,receipt,wallet,trade,rpc,pools):
         node,mask=queue.popleft()
         if node==(wallet,last) and mask==3:
             method='EXACT_RECONCILED_V3_V3_ROUTE' if kinds.count(V3)==2 else 'EXACT_RECONCILED_V3_V4_ROUTE'
+            if any(p['kind']=='REVIEWED_SLIPSTREAM' for p in proofs):
+                method='EXACT_RECONCILED_SLIPSTREAM_ROUTE'
             return dict(method=method,pools=proofs,engine_authority=False)
         if node[0]==wallet and (node!=(wallet,first) or mask):continue
         for target,bit in graph[node]:
