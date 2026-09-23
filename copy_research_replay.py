@@ -21,6 +21,7 @@ from decoder import wallet_token_deltas,classify_trade,hex_value,SWAP_TOPICS,TRA
 from dex_registry import TrustedDexRegistry
 from copy_route_research import prove_route
 from copy_slipstream_research import reviewed_pool
+from copy_distribution_research import reviewed_distribution
 
 NONASSET='0xc6203d86f5efbed7f9512755f3e6132ee50d03d1'
 NONASSET_HASH='0x2825969fa042ed3875c136534af0516ab3226cbe2e1809629dae4642d5070f42'
@@ -133,13 +134,20 @@ def replay_wallet(wallet,run,records,raw,rpc,codes):
                 changes.append(dict(tx_hash=p['tx_hash'],reason=reason,before=original,after=deepcopy(p)))
         # Isolation uses the entire complete receipt set and both retained/new trades.
         for p in output:
-            if p.get('outside_snapshot') or p.get('error') or not p.get('inventory_gap') or p.get('trades'):continue
-            tx,receipt=raw[p['tx_hash']];info=infos[p['tx_hash']];reason=None
-            if nonasset_only(wallet,tx,p,info,codes):reason='REVIEWED_NON_STATE_CHANGING_LOG_SOURCE'
-            elif isolated_credit(wallet,tx,info,disposed,traded):reason='ISOLATED_NONTRADING_CREDIT'
+            if p.get('outside_snapshot') or p.get('trades') or not (p.get('error') or p.get('inventory_gap')):continue
+            tx,receipt=raw[p['tx_hash']];info=infos[p['tx_hash']];reason=None;evidence=None
+            # Generic credit rules cannot excuse decoder errors. Only the
+            # exact reviewed input/receipt below can explain that known case.
+            if not p.get('error'):
+                if nonasset_only(wallet,tx,p,info,codes):reason='REVIEWED_NON_STATE_CHANGING_LOG_SOURCE'
+                elif isolated_credit(wallet,tx,info,disposed,traded):reason='ISOLATED_NONTRADING_CREDIT'
+            if not reason:
+                evidence=reviewed_distribution(wallet,tx,receipt,info,disposed,traded)
+                if evidence:reason=evidence['reason']
             if reason:
                 before=deepcopy(p);p['inventory_gap']=False
-                p['research_inventory_evidence']=dict(reason=reason,raw_deltas={t:str(v) for t,v in info['deltas'].items()})
+                if evidence:p.pop('error',None)
+                p['research_inventory_evidence']=dict(evidence or {},reason=reason,raw_deltas={t:str(v) for t,v in info['deltas'].items()})
                 changes.append(dict(tx_hash=p['tx_hash'],reason=reason,before=before,after=deepcopy(p)))
         # uint256 balances have up to 78 digits. Default Decimal precision (28)
         # can lose unit remainders when FIFO adds/subtracts raw quantities.
