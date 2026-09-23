@@ -24,6 +24,7 @@ from copy_slipstream_research import reviewed_pool
 from copy_distribution_research import reviewed_distribution
 from copy_synthra_research import reviewed_pool as reviewed_synthra_pool
 from copy_launchpad_research import prove_buy as prove_launchpad_buy, reviewed_code as reviewed_launchpad_code
+from copy_v2_research import reviewed_pool as reviewed_v2_pool
 
 NONASSET='0xc6203d86f5efbed7f9512755f3e6132ee50d03d1'
 NONASSET_HASH='0x2825969fa042ed3875c136534af0516ab3226cbe2e1809629dae4642d5070f42'
@@ -33,6 +34,10 @@ READONLY_LOG_HASH='0xc562f804e4e9a90fc0e8f2720071e5bc7f768b79bb2fcbd9e0af7062301
 
 class RawUnitsRPC(OfflineRPC):
     def swap_emitter_trusted(self,address,block):
+        v2=getattr(self,'v2_proofs',{})
+        if any(a==address.lower() for a,b in v2):
+            if not reviewed_v2_pool(v2.get((address.lower(),block),{}),block):
+                return False
         synthra=getattr(self,'synthra_proofs',{})
         if any(a==address.lower() for a,b in synthra):
             if not reviewed_synthra_pool(synthra.get((address.lower(),block),{}),block):
@@ -172,7 +177,7 @@ def replay_wallet(wallet,run,records,raw,rpc,codes):
     return dict(holding=holding,changes=changes,records=output)
 
 
-def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path,slipstream_proofs=(),synthra_proofs=(),launchpad_proofs=()):
+def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path,slipstream_proofs=(),synthra_proofs=(),launchpad_proofs=(),v2_proofs=()):
     campaign,pool_dir,exact_dir,out=map(Path,(campaign,pool_dir,exact_dir,out))
     wallets=json.loads(Path(scope).read_text())['wallets']
     if (not isinstance(wallets,list) or not 1<=len(wallets)<=25 or len(set(wallets))!=len(wallets) or
@@ -220,7 +225,19 @@ def run(campaign,scope,pool_dir,exact_dir,out,caches,ledgers,registry_path,slips
         proof=json.loads(path.read_text(encoding='utf-8'))
         if not reviewed_launchpad_code(proof):raise ValueError('launchpad_provenance_incomplete')
         codes.setdefault((proof['address'],proof['block']),set()).add(bytes.fromhex(proof['code'][2:]))
+    v2={}
+    for path in map(Path,v2_proofs):
+        digest=json.loads((path.parent/'manifest.json').read_text(encoding='utf-8')).get(path.name)
+        if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:raise ValueError('v2_digest_mismatch')
+        for proof in json.loads(path.read_text(encoding='utf-8'))['pools']:
+            address,block=proof['pool'],proof['block']
+            if not reviewed_v2_pool(proof,block):raise ValueError('v2_provenance_incomplete')
+            key=(address,block)
+            if key in v2 and v2[key]!=proof:raise ValueError('conflicting_v2_proof')
+            v2[key]=proof;registry.entries[address]=proof['runtime_code_hash']
+            codes.setdefault(key,set()).add(bytes.fromhex(proof['code'][2:]))
     rpc=RawUnitsRPC(registry,{},codes)
+    rpc.v2_proofs=v2
     rpc.synthra_proofs=synthra
     rpc.pool_proofs=pool_proofs
     out.mkdir(parents=True,exist_ok=False);rows=[]
@@ -253,9 +270,10 @@ def main():
     p.add_argument('--slipstream-proof',action='append',default=[])
     p.add_argument('--synthra-proof',action='append',default=[])
     p.add_argument('--launchpad-proof',action='append',default=[])
+    p.add_argument('--v2-proof',action='append',default=[])
     p.add_argument('--registry',default='trusted_dex.json');a=p.parse_args()
     run(a.campaign,a.scope,a.pools,a.exact,a.output,[Path(a.campaign)/'rpc_cache.sqlite3',*a.cache],
-        [Path(a.campaign)/'requests.jsonl',*a.ledger],a.registry,a.slipstream_proof,a.synthra_proof,a.launchpad_proof)
+        [Path(a.campaign)/'requests.jsonl',*a.ledger],a.registry,a.slipstream_proof,a.synthra_proof,a.launchpad_proof,a.v2_proof)
 
 
 if __name__=='__main__':main()
