@@ -9,13 +9,16 @@ from dex_registry import TrustedDexRegistry
 
 
 def fixture():
-    return json.loads((Path(__file__).parent/'fixtures/copy_synthra_arc.json').read_text(encoding='utf-8'))
+    original=json.loads((Path(__file__).parent/'fixtures/copy_synthra_arc.json').read_text(encoding='utf-8'))
+    extra=json.loads((Path(__file__).parent/'fixtures/copy_synthra_replacement_arc.json').read_text(encoding='utf-8'))
+    return dict(rows=original['rows']+extra['rows'])
 
 
 @pytest.mark.parametrize('case',[None,'factory','reported_factory','registered_pool','token0','fee',
     'init_code_hash','predicted_pool','pool_code','pool_code_hash','block','status','missing','short_address'])
-def test_exact_block_membership_and_official_create2_required(case):
-    p=fixture()['rows'][0]['proof'];block=p['block']
+@pytest.mark.parametrize('index',[0,3])
+def test_exact_block_membership_and_official_create2_required(case,index):
+    p=fixture()['rows'][index]['proof'];block=p['block']
     if case=='missing':p.pop('registered_pool')
     elif case=='block':block+=1
     elif case=='fee':p['fee']=3000
@@ -25,7 +28,7 @@ def test_exact_block_membership_and_official_create2_required(case):
     assert reviewed_pool(p,block) is (case is None)
 
 
-@pytest.mark.parametrize('index,side',[(0,'BUY'),(1,'SELL'),(2,'SELL')])
+@pytest.mark.parametrize('index,side',[(0,'BUY'),(1,'SELL'),(2,'SELL'),(3,'BUY')])
 def test_stored_swaps_confirm_offline_without_changing_production(tmp_path,monkeypatch,index,side):
     import socket,requests
     def deny(*a,**kw):pytest.fail('network during local replay')

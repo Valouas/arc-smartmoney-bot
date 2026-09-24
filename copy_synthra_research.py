@@ -10,6 +10,7 @@ SOURCE = 'https://docs.synthra.org/assets/index-jIUJ8fq1.js'
 SOURCE_SHA256 = '2627917875e2dd0aa75bdde9af1758a0140ae43b331f13ea573b2936a2ffc9b8'
 # Deliberately limited to the reviewed pool/block pairs, even for identical code.
 REVIEWED = {
+    ('0x5bc5ced48bec9260c8d626269f44e22808b8d2c1', 21147458): '0xacb3c89954ddc9a3fc3f3b3a8a054edd1ccfbabd57e3587df4461d9cedcb76ec',
     ('0xcee68e8e409b182388ef7a24b968c098f9642ad8', 21319266): '0xefb339874a4263f15ef0f80e033363d329d30ecf1891e3978d6d0dd156c84d08',
     ('0xcee68e8e409b182388ef7a24b968c098f9642ad8', 21319289): '0xefb339874a4263f15ef0f80e033363d329d30ecf1891e3978d6d0dd156c84d08',
     ('0xee765f55b122d7ae01cdc3dab164512245405120', 21189907): '0x1fdd0ad7935fedc5d2823ba62f299fadb20c1f8fd652881bff73ee2f31ac65e1',
