@@ -8,13 +8,14 @@ from dex_registry import TrustedDexRegistry
 from decoder import classify_trade
 
 
-def fixture():
-    return json.loads((Path(__file__).parent/'fixtures/copy_v2_arc.json').read_text(encoding='utf-8'))
+@pytest.fixture(params=['copy_v2_arc.json', 'copy_dyor_v2_arc.json'])
+def evidence(request):
+    return json.loads((Path(__file__).parent/'fixtures'/request.param).read_text(encoding='utf-8'))
 
 
 @pytest.mark.parametrize('field',[None,'factory','token0','token1','pool','registered_pool','predicted_pool','init_code_hash','code','runtime_code_hash','factory_code','factory_code_hash','status','block','missing'])
-def test_v2_membership_create2_and_both_codes_required(field):
-    p=fixture()['rows'][0]['proof'];block=p['block']
+def test_v2_membership_create2_and_both_codes_required(field,evidence):
+    p=evidence['rows'][0]['proof'];block=p['block']
     if field=='missing':p.pop('registered_pool')
     elif field=='block':p['block']+=1
     elif field:p[field]='0x'+'1'*40
@@ -22,11 +23,11 @@ def test_v2_membership_create2_and_both_codes_required(field):
 
 
 @pytest.mark.parametrize('index,side',[(0,'BUY'),(1,'SELL')])
-def test_offline_swap_confirmed_only_at_reviewed_blocks(tmp_path,monkeypatch,index,side):
+def test_offline_swap_confirmed_only_at_reviewed_blocks(tmp_path,monkeypatch,index,side,evidence):
     import requests,socket
     def deny(*a,**k):pytest.fail('network during offline V2 replay')
     monkeypatch.setattr(requests.Session,'request',deny);monkeypatch.setattr(socket.socket,'connect',deny)
-    f=fixture()['rows'][index];p=f['proof'];before=deepcopy(f)
+    f=evidence['rows'][index];p=f['proof'];before=deepcopy(f)
     path=tmp_path/'trusted.json';path.write_text(json.dumps(dict(chain_id=5042,emitters=[])))
     registry=TrustedDexRegistry(path,5042);original=path.read_bytes()
     registry.entries[p['pool']]=p['runtime_code_hash'];block=p['block'];code=bytes.fromhex(p['code'][2:])
@@ -42,8 +43,8 @@ def test_offline_swap_confirmed_only_at_reviewed_blocks(tmp_path,monkeypatch,ind
     p['factory']=before['proof']['factory'];assert f==before
 
 
-def test_no_registry_grant_without_evidence(tmp_path):
-    p=fixture()['rows'][0]['proof'];path=tmp_path/'trusted.json'
+def test_no_registry_grant_without_evidence(tmp_path,evidence):
+    p=evidence['rows'][0]['proof'];path=tmp_path/'trusted.json'
     path.write_text(json.dumps(dict(chain_id=5042,emitters=[])))
     rpc=RawUnitsRPC(TrustedDexRegistry(path,5042),{}, {})
     assert not rpc.swap_emitter_trusted(p['pool'],p['block'])
