@@ -1,0 +1,536 @@
+"""Resumable holding-time research; optional bounded Alchemy, no engine authority."""
+import argparse
+from collections import Counter
+from contextlib import closing, contextmanager
+import hashlib
+import json
+from pathlib import Path
+import sqlite3
+import time
+import math
+import threading
+
+from arcscan import ArcscanClient
+from copy_candidate_report import shortlist, ADDRESS
+from copy_holding_duration import stored_holding
+from copy_holding_pilot import ARC_URL, PUBLIC_RPC_URLS, Budget, BoundedSession, PilotCache, PilotLimit, save_new
+from historical_collector import HistoricalCollector, parse_page
+from historical_snapshots import decoding_context
+from historical_store import SCHEMA
+from historical_prefetch import read_transaction
+from copy_holding_prefetch import ordered_tasks
+from process_lock import ProcessLock
+from rpc_transport import RPCError, SharedRateLimiter, SharedComputeLimiter
+from copy_holding_transport import (CampaignRPCProvider, AlchemyCampaignSession, CampaignArcRPC,
+    require_alchemy_arc, RESERVED_CU_PER_ATTEMPT, RESERVED_USD_PER_MILLION_CU)
+
+QUEUE = """
+CREATE TABLE campaign_queue (
+ wallet TEXT PRIMARY KEY, priority INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'PENDING',
+ turns INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0,
+ next_attempt REAL NOT NULL DEFAULT 0, reason TEXT, result TEXT);
+CREATE TABLE campaign_budget(service TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0);
+INSERT INTO campaign_budget VALUES('rpc',0),('arcscan',0);
+"""
+
+
+def connect(path):
+    db=sqlite3.connect(path,timeout=30);db.row_factory=sqlite3.Row
+    return db
+
+
+def snapshot(db, directory, label):
+    destination=Path(directory)/f'{label}_{time.time_ns()}.sqlite3'
+    with closing(sqlite3.connect(destination)) as saved:db.backup(saved)
+    save_new(destination.with_suffix('.sha256.json'),dict(file=destination.name,
+        sha256=hashlib.sha256(destination.read_bytes()).hexdigest()))
+    return destination
+
+
+def prepare(source, scope, directory, cfg, *, rpc_cap=200000, arc_cap=10000):
+    wallets=shortlist(scope)
+    if not wallets or len(wallets)>1512:raise ValueError('campaign_scope_size')
+    from wallet_policy import infrastructure_addresses
+    if set(wallets)&infrastructure_addresses(cfg):raise ValueError('infrastructure_in_scope')
+    out=Path(directory).resolve();out.mkdir(parents=True,exist_ok=False)
+    (out/'backups').mkdir()
+    scope_bytes=Path(scope).read_bytes();(out/'scope.json').write_bytes(scope_bytes)
+    context=decoding_context(cfg)
+    db=connect(out/'campaign.sqlite3');db.executescript(SCHEMA+QUEUE)
+    with closing(sqlite3.connect(Path(source).resolve().as_uri()+'?mode=ro',uri=True)) as src:
+        src.row_factory=sqlite3.Row;src.execute('PRAGMA query_only=ON');src.execute('BEGIN')
+        with db:
+            for rank,w in enumerate(wallets):
+                db.execute('INSERT INTO campaign_queue(wallet,priority) VALUES(?,?)',(w,rank))
+                run=src.execute('SELECT * FROM historical_runs WHERE wallet=?',(w,)).fetchone()
+                if run:
+                    keys=','.join(run.keys())
+                    db.execute(f"INSERT INTO historical_runs({keys}) VALUES({','.join('?' for _ in run)})",tuple(run))
+                db.executemany('INSERT INTO historical_transactions VALUES(?,?,?)',
+                    src.execute('SELECT wallet,tx_hash,payload FROM historical_transactions WHERE wallet=?',(w,)))
+                context_row=src.execute('SELECT context FROM historical_refresh_context WHERE wallet=?',(w,)).fetchone()
+                reason=None
+                if not run:reason='MISSING_HISTORY_GENERATION'
+                elif run['version']!=1:reason='INVALIDATED_HISTORY_REQUIRES_REVIEW'
+                elif run['phase'] not in ('FETCHING','DECODING','COMPLETE'):reason='UNSUPPORTED_HISTORY_PHASE'
+                elif not context_row or context_row[0]!=context:reason='DECODER_CONTEXT_REQUIRES_REVIEW'
+                if reason:db.execute("UPDATE campaign_queue SET state='REVIEW_REQUIRED',reason=? WHERE wallet=?",(reason,w))
+    snapshot(db,out/'backups','initial')
+    save_new(out/'settings.json',dict(schema_version=1,scope_sha256=hashlib.sha256(scope_bytes).hexdigest(),
+        wallets=len(wallets),context=context,rpc_cap=rpc_cap,arcscan_cap=arc_cap,
+        created_at=time.time(),max_seconds=72*3600,public_requests_per_second=1,
+        nansen_calls=0,alchemy_calls=0,production_database_modified=False))
+    status(db,out);db.close()
+
+
+class CampaignBudget(Budget):
+    """Counts are reserved in SQLite before every HTTP attempt, across restarts."""
+    def __init__(self,directory,db,settings):
+        super().__init__(directory,settings['rpc_cap'],settings['arcscan_cap'],settings['max_seconds'])
+        self.db=db
+        self.owner=threading.get_ident()
+        self.db_path=db.execute('PRAGMA database_list').fetchone()[2]
+        self.reservation_lock=threading.RLock()
+        self.counts=Counter({r['service']:r['attempts'] for r in db.execute('SELECT * FROM campaign_budget')})
+        self.deadline=time.monotonic()+max(0,settings['created_at']+settings['max_seconds']-time.time())
+        db.execute('CREATE TABLE IF NOT EXISTS campaign_paid_budget(id INTEGER PRIMARY KEY CHECK(id=1),attempts INTEGER NOT NULL,reserved_cu INTEGER NOT NULL)')
+        db.execute('INSERT OR IGNORE INTO campaign_paid_budget VALUES(1,0,0)');db.commit()
+        self.paid_cap=settings.get('paid_rpc',{}).get('reserved_cu_cap',0)
+        self.paid_wallets=settings.get('paid_rpc',{}).get('wallets')
+        if self.paid_wallets is not None and (not isinstance(self.paid_wallets,list) or
+                not 1<=len(self.paid_wallets)<=25 or any(not isinstance(w,str) or
+                not ADDRESS.fullmatch(w) or w!=w.lower() for w in self.paid_wallets)):
+            raise ValueError('invalid_paid_wallet_scope')
+
+    @contextmanager
+    def reservation_db(self):
+        with self.reservation_lock:
+            if threading.get_ident()==self.owner:
+                yield self.db
+            else:
+                if not self.db_path:raise ValueError('parallel_budget_requires_persistent_database')
+                with closing(connect(self.db_path)) as db:yield db
+
+    def record(self,event):
+        with self.reservation_lock:super().record(event)
+
+    def take(self,service,method):
+        if time.monotonic()>=self.deadline:raise PilotLimit()
+        with self.reservation_db() as db:
+            if time.monotonic()>=self.deadline:raise PilotLimit()
+            with db:
+                changed=db.execute('UPDATE campaign_budget SET attempts=attempts+1 WHERE service=? AND attempts<?',
+                    (service,self.limits[service])).rowcount
+            if not changed:raise PilotLimit()
+            self.counts[service]+=1;self.methods[method]+=1
+            return sum(self.counts.values())
+
+    def paid_available(self):
+        if self.paid_wallets is not None and self.wallet not in self.paid_wallets:return False
+        with self.reservation_db() as db:
+            used=db.execute('SELECT reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()[0]
+        return used+RESERVED_CU_PER_ATTEMPT<=self.paid_cap
+
+    def take_paid(self,method):
+        if time.monotonic()>=self.deadline:raise PilotLimit()
+        if self.paid_wallets is not None and self.wallet not in self.paid_wallets:raise PaidBudgetLimit()
+        # Reserve both limits atomically, including HTTP errors and retry attempts.
+        with self.reservation_db() as db:
+            if time.monotonic()>=self.deadline:raise PilotLimit()
+            with db:
+                db.execute('BEGIN IMMEDIATE')
+                rpc_used=db.execute("SELECT attempts FROM campaign_budget WHERE service='rpc'").fetchone()[0]
+                paid_used=db.execute('SELECT reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()[0]
+                if rpc_used>=self.limits['rpc']:raise PilotLimit()
+                if paid_used+RESERVED_CU_PER_ATTEMPT>self.paid_cap:raise PaidBudgetLimit()
+                db.execute("UPDATE campaign_budget SET attempts=attempts+1 WHERE service='rpc'")
+                db.execute('UPDATE campaign_paid_budget SET attempts=attempts+1,reserved_cu=reserved_cu+? WHERE id=1',(RESERVED_CU_PER_ATTEMPT,))
+            self.counts['rpc']+=1;self.methods[method]+=1
+            return sum(self.counts.values())
+
+
+class PaidBudgetLimit(PilotLimit):
+    pass
+
+
+def enable_paid(directory,cfg,max_usd,priority_file=None):
+    if isinstance(max_usd,bool) or not math.isfinite(max_usd) or not 0<max_usd<=20:
+        raise ValueError('paid_budget_must_be_between_0_and_20_usd')
+    require_alchemy_arc(cfg.rpc_url)
+    out=Path(directory).resolve()
+    with ProcessLock(out/'worker.lock'):
+        old=(out/'settings.json').read_bytes();settings=json.loads(old)
+        with closing(connect(out/'campaign.sqlite3')) as db:
+            wallets=list(load_priorities(priority_file,db)) if priority_file else settings.get('paid_rpc',{}).get('wallets')
+        (out/f'settings_before_paid_{time.time_ns()}.json').write_bytes(old)
+        settings['paid_rpc']=dict(enabled=True,authorized_max_usd=max_usd,
+            reserved_cu_cap=int(max_usd*1_000_000/RESERVED_USD_PER_MILLION_CU),
+            reserved_cu_per_attempt=RESERVED_CU_PER_ATTEMPT,
+            reserved_usd_per_million_cu=RESERVED_USD_PER_MILLION_CU,
+            configured_at=time.time())
+        if wallets is not None:settings['paid_rpc']['wallets']=wallets
+        temp=out/'settings.tmp';temp.write_text(json.dumps(settings,indent=2),encoding='utf-8');temp.replace(out/'settings.json')
+        # Credentials stay in .env/in memory; previous usage is never reset.
+        save_new(out/f'paid_policy_{time.time_ns()}.json',settings['paid_rpc'])
+
+
+def check_anchor(rpc,run):
+    h=rpc.get_block(run['cutoff_block'],False)['hash'].hex().removeprefix('0x')
+    if h.lower()!=run['cutoff_hash'].lower().removeprefix('0x'):raise ValueError('campaign_anchor_mismatch')
+
+
+def enable_nansen(directory,nansen_directory):
+    out=Path(directory).resolve();side=Path(nansen_directory).resolve()
+    policy=json.loads((side/'settings.json').read_text())
+    if Path(policy['campaign']).resolve()!=out:raise ValueError('nansen_campaign_mismatch')
+    with ProcessLock(out/'worker.lock'),closing(connect(out/'campaign.sqlite3')) as db:
+        old=(out/'settings.json').read_bytes();settings=json.loads(old)
+        if policy['context']!=settings['context']:raise ValueError('nansen_context_mismatch')
+        snapshot(db,out/'backups','before_nansen_seeds')
+        (out/f'settings_before_nansen_{time.time_ns()}.json').write_bytes(old)
+        settings['nansen_seed_database']=str(side/'campaign.sqlite3')
+        temp=out/'settings.tmp';temp.write_text(json.dumps(settings,indent=2),encoding='utf-8')
+        temp.replace(out/'settings.json')
+
+
+def enable_hybrid(directory,hybrid_directory):
+    out=Path(directory).resolve();side=Path(hybrid_directory).resolve()
+    policy=json.loads((side/'settings.json').read_text())
+    if Path(policy['campaign']).resolve()!=out:raise ValueError('hybrid_campaign_mismatch')
+    with ProcessLock(out/'worker.lock'),closing(connect(out/'campaign.sqlite3')) as db:
+        old=(out/'settings.json').read_bytes();settings=json.loads(old)
+        if any(settings[k]!=policy[k] for k in ('context','scope_sha256')):raise ValueError('hybrid_scope_mismatch')
+        snapshot(db,out/'backups','before_hybrid')
+        (out/f'settings_before_hybrid_{time.time_ns()}.json').write_bytes(old)
+        settings['hybrid_database']=str(side/'history.sqlite3')
+        temp=out/'settings.tmp';temp.write_text(json.dumps(settings,indent=2),encoding='utf-8');temp.replace(out/'settings.json')
+
+
+def decode_hashes(db,wallet,hashes,run,rpc,*,early=False,hybrid=None):
+    decoder=object.__new__(HistoricalCollector)
+    def read(h,client):
+        with client.w3.provider.historical_headers():
+            bundle=hybrid.get(h,run,client) if hybrid else None
+            if bundle is not None:return bundle,'dune_raw_canonical_rpc'
+            return read_transaction(client,h,run['cutoff_block']),'rpc'
+
+    workers=getattr(rpc,'campaign_read_workers',1)
+    factory=getattr(rpc,'campaign_read_factory',None)
+    # Only transport reads overlap. Classification and SQLite writes stay on the
+    # owner thread and preserve the input prefix on failure.
+    parallel=workers>1 and factory is not None
+    stream=ordered_tasks(hashes,workers,factory,read) if parallel else ((h,None) for h in hashes)
+    with closing(stream):
+        for h,prefetched in stream:
+            persist_decoded(db,wallet,h,run,rpc,decoder,early,hybrid,prefetched)
+
+
+def persist_decoded(db,wallet,h,run,rpc,decoder,early,hybrid,prefetched=None):
+    with rpc.w3.provider.historical_headers():
+        if prefetched is not None:reads,source=prefetched
+        else:
+            reads=hybrid.get(h,run,rpc) if hybrid else None
+            source='dune_raw_canonical_rpc' if reads is not None else 'rpc'
+        if reads is not None:
+            payload=decoder.transaction(wallet,h,run,reads=reads,rpc=rpc)
+            if source=='dune_raw_canonical_rpc' and (payload.get('error') or payload.get('inventory_gap')):
+                # Preserve provider evidence; resolve ambiguity through the
+                # original transport/decoder, never through Nansen labels.
+                payload=decoder.transaction(wallet,h,run,rpc=rpc)
+                source='rpc_after_dune_ambiguity'
+        else:payload=decoder.transaction(wallet,h,run,rpc=rpc)
+    with db:
+        changed=db.execute('UPDATE historical_transactions SET payload=? WHERE wallet=? AND tx_hash=? AND payload IS NULL',
+                   (json.dumps(payload,allow_nan=False),wallet,h)).rowcount
+        if hybrid and changed:
+            db.execute('''CREATE TABLE IF NOT EXISTS campaign_read_sources(
+                wallet TEXT,tx_hash TEXT,source TEXT,at REAL,PRIMARY KEY(wallet,tx_hash))''')
+            db.execute('INSERT OR IGNORE INTO campaign_read_sources VALUES(?,?,?,?)',(wallet,h,source,time.time()))
+        if early:db.execute('UPDATE campaign_nansen_seeds SET decoded_early=1 WHERE wallet=? AND tx_hash=?',(wallet,h))
+
+
+def advance(db,wallet,rpc,arc,*,batch=10,seed_database=None,context=None,hybrid=None,hybrid_only=False):
+    """One fully validated page or a small decoder batch. Commit each successful tx."""
+    run=dict(db.execute('SELECT * FROM historical_runs WHERE wallet=?',(wallet,)).fetchone())
+    if run['version']!=1:raise ValueError('campaign_invalid_generation')
+    # Canonical reads are deliberately outside the provider historical cache context.
+    check_anchor(rpc,run)
+    if run['phase']=='FETCHING':
+        seeds=[]
+        if seed_database:
+            from nansen_holding_campaign import read_seeds
+            seeds=read_seeds(seed_database,wallet,run,context)
+            with db:
+                db.execute('''CREATE TABLE IF NOT EXISTS campaign_nansen_seeds(
+                    wallet TEXT,tx_hash TEXT,added INTEGER,decoded_early INTEGER DEFAULT 0,PRIMARY KEY(wallet,tx_hash))''')
+                for h in seeds:
+                    added=db.execute('INSERT OR IGNORE INTO historical_transactions VALUES(?,?,NULL)',(wallet,h)).rowcount
+                    db.execute('INSERT OR IGNORE INTO campaign_nansen_seeds(wallet,tx_hash,added) VALUES(?,?,?)',(wallet,h,added))
+        seen=json.loads(run['seen'])
+        page=arc.address_activity(wallet,limit=100,cursor=run['cursor'])
+        hashes,nxt=parse_page(page,run['cutoff_block'],seen)
+        with db:
+            db.executemany('INSERT OR IGNORE INTO historical_transactions VALUES(?,?,NULL)',((wallet,h) for h in hashes))
+            db.execute('UPDATE historical_runs SET cursor=?,seen=?,phase=?,error=NULL WHERE wallet=?',
+                (nxt,json.dumps(seen+[nxt] if nxt else seen),'FETCHING' if nxt else 'DECODING',wallet))
+        # Decode advisory hashes early, but never publish completeness while the
+        # authoritative Arcscan pagination is unfinished. Existing payloads stay intact.
+        early=[]
+        for h in (hybrid.prioritize(seeds) if hybrid else seeds):
+            if len(early)>=batch:break
+            if db.execute('SELECT 1 FROM historical_transactions WHERE wallet=? AND tx_hash=? AND payload IS NULL',(wallet,h)).fetchone():
+                early.append(h)
+        decode_hashes(db,wallet,early,run,rpc,early=True,hybrid=hybrid)
+        return None
+    missing=db.execute('SELECT tx_hash FROM historical_transactions WHERE wallet=? AND payload IS NULL ORDER BY tx_hash LIMIT ?',
+        (wallet,batch)).fetchall()
+    if hybrid:
+        pending=[r[0] for r in db.execute('SELECT tx_hash FROM historical_transactions WHERE wallet=? AND payload IS NULL ORDER BY tx_hash',(wallet,))]
+        chosen=hybrid.available(pending) if hybrid_only else hybrid.prioritize(pending)
+        missing=[{'tx_hash':h} for h in chosen[:batch]]
+    if missing:
+        # A COMPLETE header with missing payloads must cease being complete before work.
+        with db:db.execute("UPDATE historical_runs SET phase='DECODING',error=NULL WHERE wallet=?",(wallet,))
+        decode_hashes(db,wallet,[row['tx_hash'] for row in missing],run,rpc,hybrid=hybrid)
+    if db.execute('SELECT 1 FROM historical_transactions WHERE wallet=? AND payload IS NULL LIMIT 1',(wallet,)).fetchone():return None
+    check_anchor(rpc,run)
+    with db:db.execute("UPDATE historical_runs SET phase='COMPLETE',completed_at=?,error=NULL WHERE wallet=?",(int(time.time()),wallet))
+    # Persisted ambiguous trades are evidence, not transport errors to endlessly refetch.
+    return stored_holding(db,wallet)
+
+
+def status(db,out):
+    rows=[dict(r) for r in db.execute('SELECT * FROM campaign_queue ORDER BY priority')]
+    for r in rows:
+        r['result']=json.loads(r['result']) if r['result'] else None
+        r.update(live_signal_authority=False,paper_selected=False)
+    paid=(db.execute('SELECT attempts,reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='campaign_paid_budget'").fetchone() else (0,0))
+    seeds=(db.execute('SELECT COUNT(*),COALESCE(SUM(added),0),COALESCE(SUM(decoded_early),0) FROM campaign_nansen_seeds').fetchone()
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='campaign_nansen_seeds'").fetchone() else (0,0,0))
+    result=dict(updated_at=time.time(),total=len(rows),states=dict(Counter(r['state'] for r in rows)),
+        http_attempts={r['service']:r['attempts'] for r in db.execute('SELECT * FROM campaign_budget')},
+        transactions=db.execute('SELECT COUNT(*) FROM historical_transactions').fetchone()[0],
+        decoded=db.execute('SELECT COUNT(*) FROM historical_transactions WHERE payload IS NOT NULL').fetchone()[0],
+        nansen_http_calls=0,nansen_credits_consumed=0,alchemy_http_calls=paid[0],
+        nansen_seed_hashes=seeds[0],nansen_new_hashes=seeds[1],nansen_early_decoded=seeds[2],
+        alchemy_reserved_cu=paid[1],alchemy_reserved_usd=paid[1]/1_000_000*RESERVED_USD_PER_MILLION_CU,
+        production_database_modified=False,rows=rows)
+    result['hybrid_read_sources']=(dict(db.execute('SELECT source,count(*) FROM campaign_read_sources GROUP BY source'))
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='campaign_read_sources'").fetchone() else {})
+    temp=Path(out)/'status.tmp';temp.write_text(json.dumps(result,ensure_ascii=False,allow_nan=False,indent=2),encoding='utf-8')
+    temp.replace(Path(out)/'status.json')  # Rebuildable status; immutable evidence lives in DB/backups/ledger.
+    return result
+
+
+def record_success(db,wallet,result):
+    """The retry threshold counts consecutive failed turns, not lifetime errors."""
+    with db:
+        if result:
+            state='VERIFIED' if result['holding_duration_eligible'] else 'TOO_SHORT' if result['holding_duration_status']=='EXCLUDED_SHORT_HOLDING' else 'REVIEW_REQUIRED'
+            db.execute('UPDATE campaign_queue SET state=?,result=?,reason=?,turns=turns+1,failures=0,next_attempt=0 WHERE wallet=?',
+                       (state,json.dumps(result),result['holding_duration_reason'],wallet))
+        else:
+            db.execute('UPDATE campaign_queue SET turns=turns+1,reason=NULL,failures=0,next_attempt=0 WHERE wallet=?',(wallet,))
+
+
+def load_priorities(path, db):
+    """Explicit report shortlist only; never insert new wallets or reset progress."""
+    if path is None:return ()
+    spec=json.loads(Path(path).read_text(encoding='utf-8'))
+    wallets=spec.get('wallets') if isinstance(spec,dict) else None
+    if (not isinstance(wallets,list) or not 1<=len(wallets)<=25 or
+        any(not isinstance(w,str) or not ADDRESS.fullmatch(w) for w in wallets)):
+        raise ValueError('invalid_priority_wallets')
+    wallets=tuple(w.lower() for w in wallets)
+    if len(set(wallets))!=len(wallets):raise ValueError('duplicate_priority_wallets')
+    if any(not db.execute('SELECT 1 FROM campaign_queue WHERE wallet=?',(w,)).fetchone() for w in wallets):
+        raise ValueError('priority_wallet_outside_campaign')
+    return wallets
+
+
+def next_pending(db, now, priorities=(), priority_only=False):
+    if priorities:
+        row=db.execute("SELECT * FROM campaign_queue WHERE state='PENDING' AND next_attempt<=? AND wallet IN ("+
+            ','.join('?' for _ in priorities)+") ORDER BY turns,priority LIMIT 1",(now,*priorities)).fetchone()
+        if row:return row
+    if priority_only:return None
+    return db.execute("SELECT * FROM campaign_queue WHERE state='PENDING' AND next_attempt<=? ORDER BY turns,priority LIMIT 1",(now,)).fetchone()
+
+
+def advisory_allowed(candidate, current, priorities):
+    # Provider/cache shortcuts may not displace the explicitly requested group.
+    return candidate is not None and (not current or current['wallet'] not in priorities or candidate['wallet'] in priorities)
+
+
+def run(directory,cfg,priority_file=None,*,workers=2,max_transactions=None,max_run_seconds=None,
+        priority_only=False,paid_only=False):
+    if priority_only and not priority_file:raise ValueError('priority_only_requires_file')
+    if type(workers) is not int or not 1<=workers<=4:raise ValueError('campaign_workers_must_be_1_to_4')
+    if max_transactions is not None and (type(max_transactions) is not int or max_transactions<=0):
+        raise ValueError('invalid_transaction_limit')
+    if max_run_seconds is not None and (type(max_run_seconds) is not int or max_run_seconds<=0):
+        raise ValueError('invalid_run_duration')
+    out=Path(directory).resolve();settings=json.loads((out/'settings.json').read_text())
+    if decoding_context(cfg)!=settings['context']:raise ValueError('campaign_decoder_changed')
+    if hashlib.sha256((out/'scope.json').read_bytes()).hexdigest()!=settings['scope_sha256']:raise ValueError('campaign_scope_changed')
+    from web3 import Web3
+    from dex_registry import TrustedDexRegistry
+    with ProcessLock(out/'worker.lock'),closing(connect(out/'campaign.sqlite3')) as db:
+        priorities=load_priorities(priority_file,db)
+        if priorities:
+            save_new(out/f'priority_run_{time.time_ns()}.json',dict(wallets=priorities,
+                file_sha256=hashlib.sha256(Path(priority_file).read_bytes()).hexdigest(),
+                budgets_unchanged=True,progress_reset=False))
+        hybrid=None
+        if settings.get('hybrid_database'):
+            from hybrid_history import HybridReads
+            hybrid=HybridReads(settings['hybrid_database'])
+        budget=CampaignBudget(out,db,settings)
+        if max_run_seconds is not None:budget.deadline=min(budget.deadline,time.monotonic()+max_run_seconds)
+        initial_decoded=db.execute('SELECT COUNT(payload) FROM historical_transactions').fetchone()[0]
+        initial_attempts=dict(budget.counts);started=time.monotonic()
+        initial_paid=db.execute('SELECT attempts,reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()
+        cache=PilotCache(out/'rpc_cache.sqlite3',[cfg.rpc_cache_file,
+            'outputs/holding_pilot_mainnet_20260922/rpc_cache.sqlite3','outputs/holding_pilot_live_20260922/rpc_cache.sqlite3'])
+        clients=[]
+        def make_rpc(url,limiter,paid=False):
+            client=object.__new__(CampaignArcRPC);client.chain_id=5042
+            client.dex_registry=TrustedDexRegistry(cfg.trusted_dex_registry,5042)
+            client.w3=Web3(CampaignRPCProvider(url,5042,limiter,
+                session=AlchemyCampaignSession(budget,url) if paid else BoundedSession(budget,'rpc',url,pace=False),cache=cache))
+            client.campaign_read_workers=workers
+            client.campaign_read_factory=lambda:make_rpc(url,limiter,paid)
+            return client
+        for url in ['https://rpc.mainnet.arc.io','https://rpc.arc-scan.org']:
+            assert url in PUBLIC_RPC_URLS
+            clients.append(make_rpc(url,SharedRateLimiter(cfg.rpc_rate_limit_file+'.fallback',1)))
+        labels=['public_primary','public_secondary']
+        paid_client=None;paid_disabled=False
+        if settings.get('paid_rpc',{}).get('enabled'):
+            require_alchemy_arc(cfg.rpc_url)
+            limiter=(SharedComputeLimiter(cfg.rpc_rate_limit_file,cfg.rpc_requests_per_second,cfg.rpc_compute_units_per_second)
+                if cfg.rpc_compute_units_per_second else SharedRateLimiter(cfg.rpc_rate_limit_file,cfg.rpc_requests_per_second))
+            paid_client=make_rpc(cfg.rpc_url,limiter,True)
+            clients.insert(0,paid_client);labels.insert(0,'alchemy')
+        arc=ArcscanClient(ARC_URL);arc.s.close();arc.s=BoundedSession(budget,'arcscan')
+        last_backup=time.monotonic();steps=0;stop='COMPLETE'
+        try:
+            while True:
+                if (out/'STOP').exists():stop='STOP_REQUESTED';break
+                if time.monotonic()>=budget.deadline:stop='DEADLINE';break
+                batch=10
+                if max_transactions is not None:
+                    remaining=max_transactions-(db.execute('SELECT COUNT(payload) FROM historical_transactions').fetchone()[0]-initial_decoded)
+                    if remaining<=0:stop='TRANSACTION_LIMIT';break
+                    batch=min(batch,remaining)
+                row=next_pending(db,time.time(),priorities,priority_only)
+                if settings.get('nansen_seed_database') and steps%2==0:
+                    from nansen_holding_campaign import ready_wallet
+                    ready=ready_wallet(db,settings['nansen_seed_database'],settings['context'],time.time())
+                    if advisory_allowed(ready,row,priorities) and (not priority_only or ready['wallet'] in priorities):row=ready
+                hybrid_only=False
+                if hybrid and steps%3==1:
+                    from hybrid_history import ready_wallet as hybrid_ready
+                    ready=hybrid_ready(db,hybrid.path,time.time())
+                    if advisory_allowed(ready,row,priorities) and (not priority_only or ready['wallet'] in priorities):row=ready;hybrid_only=True
+                if not row:
+                    pending=(db.execute("SELECT 1 FROM campaign_queue WHERE state='PENDING' AND wallet IN ("+
+                        ','.join('?' for _ in priorities)+')',priorities).fetchone() if priority_only else
+                        db.execute("SELECT 1 FROM campaign_queue WHERE state='PENDING'").fetchone())
+                    if pending:time.sleep(5);continue
+                    break
+                w=row['wallet'];budget.wallet=w
+                # Alternate public providers only after an actual failed attempt.
+                available=[r for r in clients if r is not paid_client or (not paid_disabled and budget.paid_available())]
+                if paid_only:
+                    available=[r for r in available if r is paid_client]
+                    if not available:stop='PAID_UNAVAILABLE';break
+                rpc=available[row['failures']%len(available)]
+                try:
+                    result=advance(db,w,rpc,arc,batch=batch,seed_database=settings.get('nansen_seed_database'),context=settings['context'],hybrid=hybrid,hybrid_only=hybrid_only)
+                    record_success(db,w,result)
+                except PaidBudgetLimit:
+                    paid_disabled=True
+                    status(db,out)
+                    if paid_only:stop='PAID_LIMIT';break
+                    continue  # Preserve partial progress; resume the same wallet on public RPC.
+                except PilotLimit:stop='BUDGET_OR_DEADLINE';break
+                except Exception as error:
+                    category=error.category if isinstance(error,RPCError) else type(error).__name__
+                    if rpc is paid_client and category in ('monthly_capacity','401','403'):
+                        paid_disabled=True
+                    failures=row['failures']+1
+                    with db:
+                        db.execute('UPDATE historical_runs SET error=? WHERE wallet=?',('campaign_'+category,w))
+                        db.execute('UPDATE campaign_queue SET failures=?,turns=turns+1,next_attempt=?,state=?,reason=? WHERE wallet=?',
+                            (failures,time.time()+min(1800,60*2**failures),'BLOCKED' if failures>=3 else 'PENDING',category,w))
+                    print(json.dumps(dict(wallet=w,category=category,attempt=failures,provider=labels[clients.index(rpc)])),flush=True)
+                steps+=1
+                s=status(db,out)
+                progress={k:s[k] for k in ('updated_at','states','decoded','transactions','http_attempts','alchemy_http_calls','alchemy_reserved_usd',
+                    'nansen_seed_hashes','nansen_new_hashes','nansen_early_decoded')}
+                progress['chain_id_cache_hits']=sum(r.w3.provider.chain_cache_hits for r in clients)
+                progress['hybrid_read_sources']=s['hybrid_read_sources']
+                print(json.dumps(progress),flush=True)
+                if time.monotonic()-last_backup>=1800:
+                    snapshot(db,out/'backups','progress')
+                    with closing(sqlite3.connect(out/'rpc_cache.sqlite3')) as cache_db:snapshot(cache_db,out/'backups','cache')
+                    last_backup=time.monotonic()
+        except KeyboardInterrupt:stop='INTERRUPTED'
+        finally:
+            for rpc in clients:rpc.w3.provider.session.close()
+            arc.s.close()
+            s=status(db,out);snapshot(db,out/'backups','exit')
+            save_new(out/f'run_{time.time_ns()}.json',dict(stop=stop,steps=steps,states=s['states'],http_attempts=s['http_attempts'],
+                workers=workers,elapsed_seconds=time.monotonic()-started,
+                decoded_this_run=s['decoded']-initial_decoded,
+                http_attempts_this_run={k:v-initial_attempts.get(k,0) for k,v in budget.counts.items()},
+                transaction_limit=max_transactions,priority_only=priority_only,paid_only=paid_only,
+                alchemy_attempts_this_run=s['alchemy_http_calls']-initial_paid[0],
+                alchemy_reserved_cu_this_run=s['alchemy_reserved_cu']-initial_paid[1]))
+            print(json.dumps(dict(stop=stop,states=s['states'])),flush=True)
+
+
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('action',choices=['prepare','run','status','enable-paid','enable-nansen','enable-hybrid'])
+    p.add_argument('--directory',required=True);p.add_argument('--scope')
+    p.add_argument('--max-usd',type=float)
+    p.add_argument('--nansen-directory')
+    p.add_argument('--hybrid-directory')
+    p.add_argument('--priority-file',help='Up to 25 existing campaign wallets to audit first; budgets unchanged')
+    p.add_argument('--workers',type=int,default=2,help='1 to 4 independent read clients; persistence remains ordered')
+    p.add_argument('--max-transactions',type=int,help='Optional bounded measurement; retain all progress')
+    p.add_argument('--max-run-seconds',type=int,help='May shorten, never extend, the campaign deadline')
+    p.add_argument('--priority-only',action='store_true',help='Never schedule wallets outside the priority file')
+    p.add_argument('--paid-only',action='store_true',help='Bounded paid measurement; stop rather than fall back to public RPC')
+    p.add_argument('--source',default='data/arc_bot.sqlite3')
+    args=p.parse_args(argv)
+    if args.action=='status':
+        with closing(sqlite3.connect((Path(args.directory)/'campaign.sqlite3').resolve().as_uri()+'?mode=ro',uri=True)) as db:
+            paid=(db.execute('SELECT attempts,reserved_cu FROM campaign_paid_budget WHERE id=1').fetchone()
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='campaign_paid_budget'").fetchone() else (0,0))
+            print(json.dumps(dict(states=dict(db.execute('SELECT state,count(*) FROM campaign_queue GROUP BY state')),
+                http_attempts=dict(db.execute('SELECT service,attempts FROM campaign_budget')),
+                alchemy_http_calls=paid[0],alchemy_reserved_usd=paid[1]/1_000_000*RESERVED_USD_PER_MILLION_CU),indent=2))
+        return
+    from config import SETTINGS
+    if args.action=='prepare':
+        if not args.scope:p.error('--scope required')
+        prepare(args.source,args.scope,args.directory,SETTINGS)
+    elif args.action=='enable-nansen':
+        if not args.nansen_directory:p.error('--nansen-directory required')
+        enable_nansen(args.directory,args.nansen_directory)
+    elif args.action=='enable-hybrid':
+        if not args.hybrid_directory:p.error('--hybrid-directory required')
+        enable_hybrid(args.directory,args.hybrid_directory)
+    elif args.action=='enable-paid':
+        if args.max_usd is None:p.error('--max-usd required')
+        enable_paid(args.directory,SETTINGS,args.max_usd,args.priority_file)
+    else:run(args.directory,SETTINGS,args.priority_file,workers=args.workers,
+             max_transactions=args.max_transactions,max_run_seconds=args.max_run_seconds,
+             priority_only=args.priority_only,paid_only=args.paid_only)
+
+
+if __name__=='__main__':main()

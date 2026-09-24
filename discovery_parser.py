@@ -65,6 +65,8 @@ def extract_transfer_rows(data, expected_token=None):
                 if token: break
         if not token and expected_token: token=expected_token.lower()
         if not (frm and to and token): continue
+        if expected_token and token != expected_token.lower(): continue
+        if isinstance(token_obj, dict) and token_obj.get("standard", "erc20").lower().replace("-", "") != "erc20": continue
         block=None
         for k in ("block","block_number","blockNumber"):
             try:
@@ -79,8 +81,10 @@ def extract_transfer_rows(data, expected_token=None):
                     if timestamp>10_000_000_000: timestamp//=1000
                     break
             except Exception: pass
-        key=(h,frm,to,token)
+        try: log_index = int(obj["log_index"])
+        except (KeyError, ValueError, TypeError): log_index = None
+        key=(h,frm,to,token,log_index)
         if key in seen: continue
         seen.add(key)
-        out.append({"tx_hash":h,"block":block,"from":frm,"to":to,"token":token,"timestamp":timestamp})
+        out.append({"tx_hash":h,"block":block,"from":frm,"to":to,"token":token,"timestamp":timestamp,"log_index":log_index})
     return out

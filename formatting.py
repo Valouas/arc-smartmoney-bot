@@ -40,3 +40,50 @@ def signal_text(s):
     if m and m.url:
         lines.append(m.url)
     return "\n".join(lines)
+
+
+def buy_opportunity_text(signal, proposal):
+    market = signal.risk.market if signal.risk else None
+    lines = [
+        '🟢 Opportunité d’achat validée par le scanner',
+        f"Token : {proposal['symbol']}",
+        proposal['token'],
+        f'Score : {signal.score}/100 | Identités indépendantes : {signal.independent_identities}',
+    ]
+    if market:
+        price = f'${market.price_usd:.8g}' if market.price_usd is not None else '?'
+        lines += [f'Prix de référence : {price}',
+                  f'Liquidité : {money(market.liquidity_usd)} | Capitalisation : {money(market.market_cap_usd or market.fdv_usd)}']
+        if market.url: lines.append(market.url)
+    eligible = [e for e in signal.events if e.confirmation_eligible and e.trade_verified and e.sizing]
+    # Keep a single concise Telegram notification; full metadata is persisted
+    # in runtime_events/signals for every event, including those not listed here.
+    for e in eligible[-3:]:
+        sizing = e.sizing
+        ratio = sizing.get('size_multiplier')
+        share = sizing.get('capital_share')
+        lines += [
+            f'Wallet autorisé : {e.wallet}',
+            f'Classe moteur : {e.intelligence_class or "?"} | signal VALIDATED',
+            f'Buy: {money(sizing.get("buy_usdc"))} | Usual buy: {money(sizing.get("usual_buy_usdc"))}',
+            f'Size: {ratio:.2f}x' if ratio is not None else 'Size: N/A (baseline insuffisante)',
+            f'Capital share observed: {share:.1%}' if share is not None else 'Capital share observed: N/A',
+            f'Sizing confidence: {sizing.get("sizing_confidence", "LOW")} | Conviction: {sizing.get("conviction_label") or "N/A"}',
+            f'Identity cluster: {e.identity_id or "?"} | Cluster size: {e.identity_cluster_size or "?"}',
+            f'Independent identities on token: {signal.independent_identities}',
+        ]
+    if len(eligible) > 3:
+        lines.append(f'+ {len(eligible)-3} wallets autorisés : détails dans le rapport local.')
+    lines += [f"Référence : {proposal['id']}", 'À examiner manuellement — aucun ordre réel envoyé.']
+    return '\n'.join(lines)
+
+
+def promoted_wallet_text(wallet, profile):
+    return '\n'.join([
+        '🧠 Nouveau wallet qualifié à suivre',
+        wallet.lower(),
+        f"Score : {profile['smart_score']}/100 | Classe : {profile['profile_class']}",
+        f"Gagnants observés : {profile['winners']}/{profile['evaluable_trades']} trades évaluables",
+        f"Déploiements achetés : {profile['launches_bought']} | Capture : {profile['opportunity_capture_rate']:.1%}",
+        'Critères de promotion validés. Suivi activé ; aucune copie automatique.',
+    ])

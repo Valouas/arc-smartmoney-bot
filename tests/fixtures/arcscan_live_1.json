@@ -1,0 +1,78 @@
+{
+  "items": [
+    {
+      "kind": "token",
+      "block": 21124304,
+      "timestamp": 1789545020,
+      "tx_hash": "0xc7d9f81a2426232488b199bccd8a41518b81f4ef89348cb0b66f771ee974cb34",
+      "log_index": 265,
+      "direction": "in",
+      "counterparty": {
+        "address": "0x40b9bdc19170bd7db4c3a737b506b674342d3be1",
+        "checksum": "0x40B9BdC19170Bd7Db4c3A737b506b674342d3be1",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "from": {
+        "address": "0x40b9bdc19170bd7db4c3a737b506b674342d3be1",
+        "checksum": "0x40B9BdC19170Bd7Db4c3A737b506b674342d3be1",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "to": {
+        "address": "0x3600000000000000000000000000000000000000",
+        "checksum": "0x3600000000000000000000000000000000000000",
+        "is_contract": true,
+        "label": "USDC (ERC-20)",
+        "tag": "usdc-erc20",
+        "category": "system",
+        "protocol": "arc"
+      },
+      "token": {
+        "address": "0x093770c041723a91453adb5342d61f4ccd26e934",
+        "checksum": "0x093770C041723a91453adb5342d61F4CCD26E934",
+        "name": "silence",
+        "symbol": "SILENCE",
+        "decimals": 18,
+        "standard": "erc20",
+        "is_native_interface": false,
+        "reserved_name_check": "clear",
+        "shares_reserved_name": false,
+        "unverified_lookalike": false
+      },
+      "amount": {
+        "raw": "200000000000000000000",
+        "decimals": 18,
+        "formatted": "200",
+        "usd": null,
+        "symbol": "SILENCE"
+      },
+      "token_id": null
+    }
+  ],
+  "page": {
+    "next": null,
+    "prev": null,
+    "has_more": false,
+    "window": null,
+    "coverage": {
+      "source": "index",
+      "indexed": true,
+      "stream": "chain",
+      "from_block": 0,
+      "to_block": 21175869,
+      "last_contiguous_block": 21175869,
+      "gaps": [],
+      "gap_blocks": 0,
+      "message": null,
+      "message_key": null,
+      "message_phrase": null
+    }
+  }
+}

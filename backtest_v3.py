@@ -1,48 +1,68 @@
-from __future__ import annotations
-import json, sqlite3, statistics
-from pathlib import Path
+"""Fixed-horizon forward evaluation, separate from simulated realized PnL."""
+import json
+import math
+import statistics
+import time
 from config import SETTINGS
+from storage import Storage
+from atomic_json import write_json
 
-def f(x):
-    try: return float(x)
-    except Exception: return None
+
+def f(value):
+    try:
+        value=float(value)
+        return value if math.isfinite(value) else None
+    except (TypeError,ValueError): return None
+
 
 class BacktestV3:
-    def __init__(self, db_path="data/arc_bot.sqlite3"):
-        self.db = sqlite3.connect(db_path)
-        self.db.row_factory = sqlite3.Row
+    def __init__(self, db_path='data/arc_bot.sqlite3'):
+        self.storage=Storage(db_path)
+        self.db=self.storage.db
 
     def validated_signals(self):
-        return self.db.execute("SELECT id,created_at,token,score,payload FROM signals WHERE side='BUY' AND status='VALIDATED' ORDER BY created_at").fetchall()
+        return self.db.execute("SELECT id,created_at,token,score,payload FROM signals WHERE side='BUY' AND status='VALIDATED' ORDER BY created_at,id").fetchall()
 
-    def signal_entry_price(self, row):
-        try:
-            payload = json.loads(row["payload"])
-            return f(((payload.get("risk") or {}).get("market") or {}).get("price_usd"))
-        except Exception: return None
-
-    def future_prices(self, token, after_ts):
-        rows = self.db.execute("SELECT horizon_minutes,observed_at,delay_seconds,price_usd FROM launch_snapshots WHERE lower(token)=lower(?) AND observed_at>? AND price_usd IS NOT NULL ORDER BY observed_at", (token, after_ts)).fetchall()
-        return [{"horizon":r["horizon_minutes"],"observed_at":r["observed_at"],"delay":r["delay_seconds"],"price":float(r["price_usd"])} for r in rows]
+    def signal_entry_price(self,row):
+        try: return f(((json.loads(row['payload']).get('risk') or {}).get('market') or {}).get('price_usd'))
+        except (TypeError,ValueError): return None
 
     def run(self):
-        trades=[]
-        for r in self.validated_signals():
-            entry=self.signal_entry_price(r); future=self.future_prices(r["token"], r["created_at"])
-            if not entry or entry <= 0 or not future:
-                trades.append({"signal_id":r["id"],"token":r["token"],"score":r["score"],"evaluable":False,"reason":"missing_entry_or_future_snapshot"})
-                continue
-            returns=[100*(x["price"]/entry-1) for x in future]
-            max_ret=max(returns); final_ret=returns[-1]
-            trades.append({"signal_id":r["id"],"token":r["token"],"score":r["score"],"evaluable":True,"entry_price":entry,"max_return_pct":max_ret,"last_return_pct":final_ret,"winner":max_ret>=SETTINGS.winner_return_pct,"snapshots":future})
-        ev=[x for x in trades if x["evaluable"]]; wins=[x for x in ev if x["winner"]]
-        summary={"validated_signals":len(trades),"evaluable_signals":len(ev),"winners":len(wins),"winner_threshold_pct":SETTINGS.winner_return_pct,"win_rate":len(wins)/len(ev) if ev else None,"median_max_return_pct":statistics.median([x["max_return_pct"] for x in ev]) if ev else None,"median_last_return_pct":statistics.median([x["last_return_pct"] for x in ev]) if ev else None,"insufficient_data":len(ev)<10}
-        out={"summary":summary,"trades":trades}
-        Path("data/backtest_v3.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
-        print("=== V3 FORWARD BACKTEST ===")
-        for k,v in summary.items(): print(f"{k}: {v}")
-        if summary["insufficient_data"]: print("\nWARNING: fewer than 10 evaluable VALIDATED signals; do not infer an edge yet.")
+        now=int(time.time())
+        epoch=self.db.execute("SELECT started_at FROM observation_epochs WHERE name='launch_universe'").fetchone()
+        trades=[]; seen=set()
+        for row in self.validated_signals():
+            token=row['token'].lower()
+            if token in seen: continue  # Repeated alerts on a token are not independent trials.
+            if not epoch or row['created_at']<epoch[0]: continue
+            seen.add(token)
+            entry=self.signal_entry_price(row)
+            target=row['created_at']+SETTINGS.outcome_horizon_seconds
+            key='signal:'+str(row['id'])
+            self.db.execute('INSERT OR IGNORE INTO trade_outcomes(tx_hash,wallet,token,entry_at,target_at,deadline_at) VALUES(?,?,?,?,?,?)',
+                            (key,'signal',token,row['created_at'],target,target+SETTINGS.outcome_grace_seconds))
+            outcome=self.db.execute('SELECT * FROM trade_outcomes WHERE tx_hash=? AND wallet=? AND token=?',(key,'signal',token)).fetchone()
+            state=outcome['status']
+            if state=='PENDING' and now>outcome['deadline_at']: state='MISSING'
+            ret=(outcome['price']/entry-1)*100 if state=='OBSERVED' and entry and entry>0 else None
+            trades.append({'signal_id':row['id'],'token':token,'state':state,'target_at':outcome['target_at'],
+                           'observed_at':outcome['observed_at'],'return_pct':ret,'winner':ret is not None and ret>=SETTINGS.winner_return_pct})
+        self.storage.commit()
+        observed=[r for r in trades if r['return_pct'] is not None]
+        missing=sum(r['state']=='MISSING' for r in trades); wins=sum(r['winner'] for r in observed)
+        mature=len(observed)+missing
+        summary={'cohort':'forward_first_signal_per_token','horizon_seconds':SETTINGS.outcome_horizon_seconds,
+                 'signals':len(trades),'observed':len(observed),'missing':missing,'pending':sum(r['state']=='PENDING' for r in trades),
+                 'win_rate_observed_only':wins/len(observed) if observed else None,
+                 'win_rate_lower_bound':wins/mature if mature else None,
+                 'win_rate_upper_bound':(wins+missing)/mature if mature else None,
+                 'median_fixed_horizon_return_pct':statistics.median(r['return_pct'] for r in observed) if observed else None,
+                 'simulated_realized_pnl_usd':self.db.execute("SELECT COALESCE(SUM(realized_pnl),0) FROM paper_fills WHERE side='SELL'").fetchone()[0],
+                 'insufficient_data':len(observed)<10 or missing>0}
+        out={'summary':summary,'trades':trades}
+        write_json('data/backtest_v3.json',out)
+        print(json.dumps(summary,indent=2))
         return out
 
-if __name__ == "__main__":
-    BacktestV3().run()
+
+if __name__=='__main__': BacktestV3().run()

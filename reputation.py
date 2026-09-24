@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import json, time
+from atomic_json import write_json
 
 @dataclass
 class WalletReputation:
@@ -60,7 +61,7 @@ class ReputationBook:
 
     def save(self):
         payload = {a: asdict(r) for a, r in self.items.items()}
-        self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        write_json(self.path, payload)
 
     def get(self, address: str) -> WalletReputation:
         a = address.lower()

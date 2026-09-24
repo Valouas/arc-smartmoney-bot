@@ -1,0 +1,99 @@
+{
+  "items": [
+    {
+      "block": 21176122,
+      "timestamp": 1789571280,
+      "tx_hash": "0x906048c7168a6ffcc1188f6776b034b1775aa0f90d17e37a2a2664d01b258208",
+      "tx_index": 96,
+      "log_index": 687,
+      "method": {
+        "selector": "0x3593564c",
+        "name": "execute",
+        "is_precompile": false,
+        "is_creation": false
+      },
+      "token": {
+        "address": "0xa528ba8f99cfdb75731fa96d71712fbca6ab56d4",
+        "checksum": "0xa528Ba8F99cfdB75731FA96d71712FBCa6Ab56D4",
+        "name": "USDCar",
+        "symbol": "USDCAR",
+        "decimals": 18,
+        "standard": "erc20",
+        "is_native_interface": false,
+        "reserved_name_check": "clear",
+        "shares_reserved_name": false,
+        "unverified_lookalike": false
+      },
+      "from_address": {
+        "address": "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+        "checksum": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "to_address": {
+        "address": "0x29a0a646364ea2cc9e59c8842cd95cd8b49b2056",
+        "checksum": "0x29a0A646364ea2cC9E59C8842cD95Cd8b49B2056",
+        "is_contract": null,
+        "label": null,
+        "tag": null,
+        "category": null,
+        "protocol": null
+      },
+      "amount": {
+        "raw": "4811176467820307072219823",
+        "decimals": 18,
+        "formatted": "4811176.467820307072219823",
+        "usd": null,
+        "symbol": "USDCAR"
+      },
+      "token_id": null,
+      "standard": "erc20",
+      "operator": null,
+      "is_native_mirror": false,
+      "native_parity": false
+    }
+  ],
+  "page": {
+    "next": "eyJiIjoyMTE3NjEyMiwibCI6Njg3LCJ0Ijo5Nn0",
+    "prev": null,
+    "has_more": true,
+    "window": {
+      "from_block": 0,
+      "to_block": 21176122,
+      "complete": false
+    },
+    "coverage": null
+  },
+  "total": 32815164,
+  "total_is_estimate": true,
+  "ranking": {
+    "basis": "log order, newest first",
+    "basis_phrase": {
+      "key": "logOrder",
+      "params": {}
+    },
+    "window": {
+      "from_block": 0,
+      "to_block": 21176122,
+      "complete": false
+    },
+    "computed_at": null,
+    "candidates": null,
+    "complete": false,
+    "note": "Gas on Arc is USDC, and the chain publishes every native movement twice \u2014 once from the execution-layer mirror emitter at 18 decimals, once from the ERC-20 face at 0x3600\u2026 at 6 decimals. This view keeps only logs a token contract emitted, so every dollar appears exactly once and a bare native value transfer \u2014 which emits no token log \u2014 is not listed.",
+    "note_phrases": [
+      {
+        "key": "transfersNativeTwice",
+        "params": {}
+      },
+      {
+        "key": "transfersKindToken",
+        "params": {}
+      }
+    ]
+  },
+  "facets": null
+}

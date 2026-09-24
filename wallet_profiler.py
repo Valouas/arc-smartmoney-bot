@@ -7,6 +7,10 @@ from pathlib import Path
 from config import SETTINGS
 from storage import Storage
 from wallet_metrics import profile_from_rows
+from atomic_json import write_json
+from forward_metrics import build_forward_profile, collect_outcomes
+from market_data import DexScreenerClient
+from wallet_policy import is_dex_infrastructure
 
 logging.basicConfig(
     level=getattr(logging, SETTINGS.log_level, logging.INFO),
@@ -21,11 +25,12 @@ class WalletProfiler:
     def __init__(self):
         self.cfg = SETTINGS
         self.db = Storage()
+        self.market = DexScreenerClient(self.cfg.dexscreener_chain_id)
 
     def wallets(self):
         return [r[0] for r in self.db.db.execute(
             "SELECT DISTINCT lower(wallet) FROM events"
-        ).fetchall() if r[0]]
+        ).fetchall() if r[0] and not is_dex_infrastructure(r[0],self.cfg)]
 
     def _active_hours(self, wallet):
         rows = self.db.db.execute(
@@ -44,13 +49,13 @@ class WalletProfiler:
         rows = self.db.db.execute(
             """
             SELECT e.*, l.pair_created_at,
-                   tc.price_usd AS entry_price
+                   CASE WHEN e.token_amount>0 THEN e.usdc_amount/e.token_amount END AS entry_price
             FROM events e
             JOIN launches l ON lower(l.token)=lower(e.token)
             LEFT JOIN trade_context tc
               ON tc.tx_hash=e.tx_hash AND lower(tc.token)=lower(e.token)
               AND lower(tc.wallet)=lower(e.wallet)
-            WHERE lower(e.wallet)=? AND e.side='BUY'
+            WHERE lower(e.wallet)=? AND e.side='BUY' AND e.trade_verified=1
             ORDER BY e.timestamp
             """,
             (wallet.lower(),)
@@ -76,19 +81,19 @@ class WalletProfiler:
         for token, x in by_token.items():
             snaps = self.db.db.execute(
                 """SELECT horizon_minutes,price_usd FROM launch_snapshots
-                   WHERE token=? AND observed_at>=? AND price_usd IS NOT NULL
+                   WHERE token=? AND observed_at>? AND price_usd IS NOT NULL
                    ORDER BY observed_at""",
                 (token, x["first_ts"])
             ).fetchall()
             future_prices = [float(s["price_usd"]) for s in snaps if s["price_usd"]]
             sell = self.db.db.execute(
                 """
-                SELECT tc.price_usd AS exit_price
+                SELECT CASE WHEN e.token_amount>0 THEN e.usdc_amount/e.token_amount END AS exit_price
                 FROM events e
                 LEFT JOIN trade_context tc
                   ON tc.tx_hash=e.tx_hash AND lower(tc.token)=lower(e.token)
                   AND lower(tc.wallet)=lower(e.wallet)
-                WHERE lower(e.wallet)=? AND lower(e.token)=? AND e.side='SELL'
+                WHERE lower(e.wallet)=? AND lower(e.token)=? AND e.side='SELL' AND e.trade_verified=1
                   AND e.timestamp>=?
                 ORDER BY e.timestamp LIMIT 1
                 """,
@@ -105,28 +110,24 @@ class WalletProfiler:
         return out
 
     def profile_wallet(self, wallet):
-        active = self._active_hours(wallet)
-        opportunities = self._opportunities(active)
-        entries = self._launch_entries(wallet)
-        opportunities = max(opportunities, len(entries))
-        profile = profile_from_rows(wallet, entries, opportunities, len(active), self.cfg)
-        profile["generated_at"] = int(time.time())
-        return profile
+        return build_forward_profile(self.db,wallet,self.cfg)
 
     def cycle(self):
+        # Register targets before sampling; stale targets become MISSING, never
+        # a convenient late quote or retrospective maximum.
+        wallets = self.wallets()
+        for w in wallets: self.profile_wallet(w)
+        collect_outcomes(self.db,self.market)
         profiles = []
         for w in self.wallets():
             p = self.profile_wallet(w)
             self.db.save_wallet_profile(p)
             profiles.append(p)
         profiles.sort(key=lambda x: (-x["smart_score"], x["wallet"]))
-        Path("data/wallet_intelligence.json").write_text(
-            json.dumps({
-                "generated_at": int(time.time()),
-                "profiles": {p["wallet"]: p for p in profiles}
-            }, indent=2),
-            encoding="utf-8"
-        )
+        write_json("data/wallet_intelligence.json", {
+            "generated_at": int(time.time()),
+            "profiles": {p["wallet"]: p for p in profiles},
+        })
         log.info("profiled %s wallets", len(profiles))
         for p in profiles[:10]:
             log.info(

@@ -1,0 +1,5 @@
+{
+  "chain_id": 5042,
+  "emitters": [],
+  "instructions": "Add reviewed immutable pool or PoolManager deployments with address and runtime_code_hash. Never copy trust from token symbols, explorer labels, or unverified Swap events. The empty registry deliberately provides no confirmation eligibility."
+}
