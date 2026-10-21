@@ -159,3 +159,9 @@ python run_v4.py
 
 This package remains a research / paper-trading system. It contains no private
 key loader, signer or automatic real-money transaction broadcaster.
+
+## License
+
+**Non-commercial use only.** Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+
+> Read-only research tool with paper trading only. It never holds private keys and never signs transactions. Not financial advice.
